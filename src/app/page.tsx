@@ -1,103 +1,156 @@
-import Image from "next/image";
+"use client";
+import "./globals.css";
+import { useCallback, useEffect, useRef, useState } from "react";
+import StatusCard from "@/components/StatusCard";
+import TimerBar from "@/components/TimeBar";
+import Legend from "@/components/Legend";
+import Matrix from "@/components/Matrix";
+import MeaAuxCard from "@/auxiliary/mea_aux/ui/MeaAuxCard";
+import CinAuxTable from "@/auxiliary/cin-aux/ui/CinAuxTable";
 
-export default function Home() {
+type TsKeys = "benchmark" | "delta" | "pct24h" | "id_pct" | "pct_drv";
+type Flags = { frozen: boolean[][] } | null;
+type MatricesResp = {
+  ok: boolean;
+  coins: string[];
+  ts: Record<TsKeys, number | null>;
+  prevTs?: Record<TsKeys, number | null>;
+  matrices: Record<TsKeys, (number | null)[][] | null>;
+  flags: Record<TsKeys, Flags | null>;
+};
+
+const APP_SESSION_ID = "dev-session";
+
+export default function Page() {
+  const [data, setData] = useState<MatricesResp | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [cinTs, setCinTs] = useState<number | null>(null);
+
+  const lastRenderedTsRef = useRef<number | null>(null);
+  const lastGateSeenAtRef = useRef<number>(0);
+
+  const maxTs = (ts?: Record<TsKeys, number | null>) =>
+    !ts ? null : (Object.values(ts).filter(Boolean) as number[]).reduce((a, b) => Math.max(a, b), 0) || null;
+
+  const fetchStatus = async () => {
+    await fetch(`/api/status?appSessionId=${encodeURIComponent(APP_SESSION_ID)}&t=${Date.now()}`, {
+      cache: "no-store",
+    }).catch(() => {});
+  };
+
+  const kickPipeline = async () => {
+    // visible log in Network & server console
+    try {
+      const r = await fetch(`/api/pipeline/run-once?t=${Date.now()}`, { method: "POST", cache: "no-store" });
+      const j = await r.json().catch(() => ({}));
+      console.log("[ui] pipeline/run-once →", j);
+    } catch {}
+  };
+
+  const fetchMatricesLatest = async () => {
+    try {
+      const url = `/api/matrices/latest?appSessionId=${encodeURIComponent(APP_SESSION_ID)}&t=${Date.now()}`;
+      const r = await fetch(url, { cache: "no-store" });
+      if (!r.ok) throw new Error(`matrices/latest ${r.status}`);
+      const j = (await r.json()) as MatricesResp;
+
+      const gateTs = maxTs(j.ts);
+      const now = Date.now();
+
+      if (gateTs && gateTs !== lastRenderedTsRef.current) {
+        lastRenderedTsRef.current = gateTs;
+        lastGateSeenAtRef.current = now;
+        setData(j);
+      } else if (!gateTs || now - (lastGateSeenAtRef.current || 0) > 60_000) {
+        // stale (>60s) or empty → kick a one-off build then try again next tick
+        await kickPipeline();
+        lastGateSeenAtRef.current = now; // throttle kicks
+      }
+    } catch (e: any) {
+      setErr(String(e?.message || e));
+    }
+  };
+
+  const fetchCinLatest = async () => {
+    try {
+      const r = await fetch(
+        `/api/cin-aux/latest?appSessionId=${encodeURIComponent(APP_SESSION_ID)}&t=${Date.now()}`,
+        { cache: "no-store" }
+      );
+      const j = await r.json();
+      setCinTs(typeof j?.cycleTs === "number" ? j.cycleTs : null);
+    } catch {
+      setCinTs(null);
+    }
+  };
+
+  useEffect(() => {
+    // first tick
+    fetchStatus();
+    fetchMatricesLatest();
+    fetchCinLatest();
+    // 5s heartbeat; UI only updates when gateTs advances (~40s)
+    const id = setInterval(() => {
+      fetchStatus();
+      fetchMatricesLatest();
+      fetchCinLatest();
+    }, 5000);
+    return () => clearInterval(id);
+  }, []);
+
+  const getCycleTs = useCallback(() => (cinTs ?? Date.now()), [cinTs]);
+
+  const coins = data?.coins ?? [];
+  const mats = data?.matrices;
+
   return (
-    <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="font-mono list-inside list-decimal text-sm/6 text-center sm:text-left">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] font-mono font-semibold px-1 py-0.5 rounded">
-              src/app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+    <div className="min-h-screen bg-slate-900 text-slate-100 p-4">
+      <header className="mb-4 flex items-center gap-3">
+        <h1 className="text-xl font-semibold">Dynamics — Matrices</h1>
+        <button
+          className="ml-auto rounded-md bg-indigo-600/80 hover:bg-indigo-500 px-3 py-1.5 text-xs"
+          onClick={kickPipeline}
+          title="Trigger one writer pass (dev)"
+        >
+          Force build (dev)
+        </button>
+      </header>
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
+      <StatusCard />
+      <TimerBar />
+      <Legend />
+
+      {err && <div className="text-red-300 mb-2">Error: {err}</div>}
+
+      {mats ? (
+        <div className="grid gap-4 grid-cols-1 md:grid-cols-3">
+          {/* Left column */}
+          <div className="space-y-4">
+            <Matrix title="Benchmark (A/B)" coins={coins} grid={mats.benchmark!} flags={data!.flags.benchmark} kind="abs" ts={data!.ts.benchmark} />
+            <Matrix title="Δ (A/B)"         coins={coins} grid={mats.delta!}     flags={data!.flags.delta}     kind="abs" ts={data!.ts.delta} />
+          </div>
+          {/* Middle column */}
+          <div className="space-y-4">
+            <Matrix title="%24h (A/B)"      coins={coins} grid={mats.pct24h!}    flags={data!.flags.pct24h}    kind="pct" ts={data!.ts.pct24h} />
+            <Matrix title="id_pct"          coins={coins} grid={mats.id_pct!}    flags={data!.flags.id_pct}    kind="abs" ts={data!.ts.id_pct} />
+          </div>
+          {/* Right column */}
+          <div className="space-y-4">
+            <Matrix title="pct_drv"         coins={coins} grid={mats.pct_drv!}   flags={data!.flags.pct_drv}   kind="abs" ts={data!.ts.pct_drv} flipOverlay />
+            <MeaAuxCard coins={coins} defaultK={7} />
+          </div>
+          {/* CIN full width */}
+          <div className="rounded-2xl bg-slate-800/60 p-3 text-[12px] text-slate-200 border border-slate-700/30 md:col-span-3">
+            <div className="mb-2 flex items-center justify-between">
+              <div className="text-slate-300 font-semibold">CIN Auxiliary</div>
+              <div className="text-slate-400 text-xs">appSession: {APP_SESSION_ID} • cycleTs: {cinTs ?? "—"}</div>
+            </div>
+            <CinAuxTable appSessionId={APP_SESSION_ID} getCycleTs={getCycleTs} />
+          </div>
         </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
+      ) : (
+        <div className="text-slate-400">Loading matrices…</div>
+      )}
     </div>
   );
 }
