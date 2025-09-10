@@ -7,13 +7,15 @@ export type AppSettings = {
   profile: { nickname: string; email: string; binanceKeyId: string };
   stats: { histogramLen: number; bmDecimals: number; idPctDecimals: number };
   timing: {
-    autoRefresh: boolean;
+    autoRefresh: boolean;           // <-- required flag
     autoRefreshMs: number;
     secondaryEnabled: boolean;
-    secondaryCycles: number;               // 1..10
-    strCycles: { m30: number; h1: number; h3: number }; // measured in cycles
+    secondaryCycles: number;        // 1..10
+    strCycles: { m30: number; h1: number; h3: number };
   };
-  clustering: { clusters: Cluster[] };
+  clustering: {
+    clusters: { id: string; name: string; coins: string[] }[];
+  };
   params: { values: Record<string, number> };
 };
 

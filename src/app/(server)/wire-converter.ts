@@ -2,8 +2,7 @@
 // SERVER-ONLY boot wiring for the Converter providers
 
 import { wireConverterSources } from "@/converters/Converter.server";
-
-import { makeMatricesModuleProvider } from "@/converters/providers/matrices.module";
+import { makeMatricesHttpProvider } from "@/converters/providers/matrices.http"; // ← NEW: HTTP provider
 import { makeMeaModuleProvider } from "@/converters/providers/meaaux.module";
 import { makeStrDbProvider } from "@/converters/providers/straux.db";
 import { makeCinDbProvider } from "@/converters/providers/cinaux.db";
@@ -14,29 +13,9 @@ const APP_SESSION = process.env.NEXT_PUBLIC_APP_SESSION_ID || "dev-session";
 const STR_WINDOW: "30m" | "1h" | "3h" =
   (process.env.NEXT_PUBLIC_STR_WINDOW as any) || "30m";
 
-// ── matrices (module) ───────────────────────────────────────────────────────────
-import { buildLatestPayload } from "@/core/matricesLatest";
-import { getLatestTsForType, getSnapshotByType } from "@/core/db";
-
-async function matrices_getMatrix(coins: string[], fields?: string[]) {
-  const payload = await buildLatestPayload(coins);
-  const out: { coins: string[]; benchmark?: number[][]; id_pct?: number[][] } = { coins };
-  if (!fields || fields.includes("benchmark")) out.benchmark = payload.matrices.benchmark ?? undefined;
-  if (!fields || fields.includes("id_pct")) out.id_pct = payload.matrices.id_pct ?? undefined;
-  return out;
-}
-async function matrices_getDerived(coins: string[]) {
-  const p = await buildLatestPayload(coins);
-  const grid = p.matrices.id_pct;
-  const id_pct =
-    grid && grid.length
-      ? grid
-      : Array.from({ length: coins.length }, () => Array(coins.length).fill(0));
-  return { coins, id_pct } as { coins: string[]; id_pct: number[][] };
-}
-
 // ── mea-aux (module) ────────────────────────────────────────────────────────────
 import { getTierWeighting } from "@/auxiliary/mea_aux/tiers";
+import { getLatestTsForType, getSnapshotByType } from "@/core/db";
 
 async function mea_getMeaForPair(pair: { base: string; quote: string }) {
   const coins = (process.env.COINS ?? "BTC,ETH,BNB,SOL,ADA,USDT")
@@ -242,12 +221,15 @@ const strDeps = {
   getVTendency:    ({ base, quote }: { base: string; quote: string }) => str_getVTendency({ base, quote }),
 };
 const strProvider = makeStrDbProvider(strDeps) as any;
-strProvider.getPctDrvHistory = str_getPctDrvHistory;     // existing numeric helper (if you kept it)
-strProvider.getPctDrvHistoryTs = str_getPctDrvHistoryTs; // NEW (timestamped)
-strProvider.getIdPctHistoryTs = str_getIdPctHistoryTs;   // NEW (timestamped)
-strProvider.getStats         = str_getStats;  
+strProvider.getPctDrvHistory   = str_getPctDrvHistory;     // existing numeric helper (if you kept it)
+strProvider.getPctDrvHistoryTs = str_getPctDrvHistoryTs;   // timestamped
+strProvider.getIdPctHistoryTs  = str_getIdPctHistoryTs;    // timestamped
+strProvider.getStats           = str_getStats;
+
+// 2) Wire all providers into the Converter
 wireConverterSources({
-  matrices: makeMatricesModuleProvider({ getMatrix: matrices_getMatrix, getDerived: matrices_getDerived }),
+  // Matrices now come from the HTTP endpoint keyed by the Settings universe
+  matrices: makeMatricesHttpProvider(process.env.NEXT_PUBLIC_BASE_URL ?? ""),
   mea:      meaProvider,
   str:      strProvider,
   cin:      makeCinDbProvider({

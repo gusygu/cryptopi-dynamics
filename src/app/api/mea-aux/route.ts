@@ -1,15 +1,26 @@
 import { NextRequest, NextResponse } from "next/server";
 import { buildMeaAux } from "@/auxiliary/mea_aux/buildMeaAux";
 import type { IdPctGrid } from "@/auxiliary/mea_aux/buildMeaAux";
-import { getAccountBalances } from "../../../sources/binanceAccount";
+import { getAccountBalances } from "@/sources/binanceAccount"; // ← alias path; new binanceAccount inlines signing
 import { getPool } from "@/db/pool";
+import { getAll as getSettings } from "@/lib/settings/server"; // ← for Settings.coinUniverse fallback
 
 export const dynamic = "force-dynamic";
+
+/* ------------------------- params & helpers ------------------------- */
 
 function parseCoins(qs: URLSearchParams): string[] | null {
   const raw = qs.get("coins");
   if (!raw) return null;
-  return raw.split(",").map(s => s.trim()).filter(Boolean);
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const s of raw.split(",")) {
+    const u = String(s || "").trim().toUpperCase();
+    if (!u || seen.has(u)) continue;
+    seen.add(u);
+    out.push(u);
+  }
+  return out.length ? out : null;
 }
 
 // Basic in-memory rate limiting to prevent accidental floods from a single client.
@@ -26,7 +37,7 @@ function isRateLimited(req: NextRequest) {
   if (RATE_MAX <= 0 || RATE_WINDOW_MS <= 0) return false;
   const key = rateKey(req);
   const now = Date.now();
-  const arr = (rateHits.get(key) ?? []).filter(t => now - t < RATE_WINDOW_MS);
+  const arr = (rateHits.get(key) ?? []).filter((t) => now - t < RATE_WINDOW_MS);
   arr.push(now);
   rateHits.set(key, arr);
   return arr.length > RATE_MAX;
@@ -48,7 +59,9 @@ async function fetchLatestIdPct(pool: ReturnType<typeof getPool>, coins: string[
     [latest]
   );
   for (const r of rows.rows) {
-    const b = r.base as string, q = r.quote as string, v = Number(r.value);
+    const b = r.base as string,
+      q = r.quote as string,
+      v = Number(r.value);
     if (!out[b]) out[b] = {};
     out[b][q] = Number.isFinite(v) ? v : null;
   }
@@ -67,20 +80,35 @@ type InFlight<T> = Promise<T> | null;
 const TTL_MS = Number(process.env.MEA_CACHE_TTL_MS ?? 40_000);
 
 const cache = {
-  idp: new Map<string, CacheEntry<IdPctGrid>>(),                  // key: coinsKey
-  wal: new Map<string, CacheEntry<Record<string, number>>>(),     // key: coinsKey
+  idp: new Map<string, CacheEntry<IdPctGrid>>(), // key: coinsKey
+  wal: new Map<string, CacheEntry<Record<string, number>>>(), // key: coinsKey
 };
 const inflight = {
   idp: new Map<string, InFlight<IdPctGrid>>(),
   wal: new Map<string, InFlight<Record<string, number>>>(),
 };
 
-function coinsKey(arr: string[]) { return arr.join(","); }
+function coinsKey(arr: string[]) {
+  return arr.join(",");
+}
+
+/* ------------------------------- GET ------------------------------- */
 
 export async function GET(req: NextRequest) {
   const qs = req.nextUrl.searchParams;
-  const coins = parseCoins(qs) ?? (process.env.COINS ?? "BTC,ETH,USDT")
-    .split(",").map(s => s.trim()).filter(Boolean);
+
+  // coins: prefer query, else Settings.coinUniverse, else legacy env default
+  const coinsFromQuery = parseCoins(qs);
+  const settings = await getSettings(); // cookie → sanitized settings
+  const coinsFromSettings = (settings.coinUniverse ?? []).map((s) =>
+    String(s || "").trim().toUpperCase()
+  ).filter(Boolean);
+  const coins =
+    coinsFromQuery ??
+    (coinsFromSettings.length ? coinsFromSettings : (process.env.COINS ?? "BTC,ETH,USDT")
+      .split(",")
+      .map((s) => s.trim().toUpperCase())
+      .filter(Boolean)); // Settings fallback
 
   const k = Number(qs.get("k") ?? NaN);
   const targetK = Number.isFinite(k) && k > 0 ? Math.floor(k) : undefined;
@@ -139,9 +167,8 @@ export async function GET(req: NextRequest) {
           );
         }
         p = (async () => {
-          let data: Record<string, number>;
-          const raw = await getAccountBalances(); // live hit
-          data = Object.fromEntries(coins.map(c => [c, Number(raw[c] ?? 0)]));
+          const raw = await getAccountBalances(); // live hit via new inlined-signed client
+          const data = Object.fromEntries(coins.map((c) => [c, Number(raw[c] ?? 0)]));
           cache.wal.set(keyWal, { at: Date.now(), data });
           return data;
         })();
@@ -150,7 +177,7 @@ export async function GET(req: NextRequest) {
       balances = await p;
       inflight.wal.delete(keyWal);
     }
-    if (Object.values(balances).every(v => v === 0)) {
+    if (Object.values(balances).every((v) => v === 0)) {
       warn.push("Wallet fetch ok, but zero balances for the selected coins.");
     }
   } catch (e: any) {
@@ -161,7 +188,7 @@ export async function GET(req: NextRequest) {
   const grid = buildMeaAux({ coins, idPct, balances, k: targetK });
 
   return NextResponse.json(
-    { ok: true, coins, k: targetK ?? (coins.length - 1), grid, meta: { warnings: warn } },
+    { ok: true, coins, k: targetK ?? coins.length - 1, grid, meta: { warnings: warn } },
     { headers: { "Cache-Control": "no-store" } }
   );
 }

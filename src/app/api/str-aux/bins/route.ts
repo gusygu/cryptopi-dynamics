@@ -16,12 +16,18 @@ import {
   fetchOrderBookPoint,
   fetchKlinesPoints,
   fetchTicker24h,
+  getSettingsCoins, usdtSymbolsFor
 } from '@/sources/binance';
+
+// ---- NEW: settings (coin selector + timing) --------------------------------
+import { getAll as getSettings } from '@/lib/settings/server';
 
 // ---------------------------------------------------------------------------
 // helpers
 
 type Interval = '1m' | '5m' | '15m' | '30m' | '1h';
+
+
 
 // UI uses: '30m' | '1h' | '3h'
 // Binance has no '3h' → pull 5m with plenty of bars
@@ -39,6 +45,10 @@ function parseWindow(s: string | null | undefined): WindowKey {
   return (v === '30m' || v === '1h' || v === '3h') ? (v as WindowKey) : '30m';
 }
 
+function normalizeSymbol(s: string) {
+  return String(s || '').toUpperCase().replace(/[^A-Z]/g, '');
+}
+
 function toSymbol(baseOrPair: string) {
   const u = baseOrPair.trim().toUpperCase();
   return u.endsWith('USDT') ? u : `${u}USDT`;
@@ -48,9 +58,9 @@ function parseCoinsParam(s: string | null | undefined): string[] {
   const raw = (s ?? process.env.NEXT_PUBLIC_COINS ?? 'BTC ETH BNB SOL ADA XRP')
     .toUpperCase()
     .split(/[,\s]+/)
-    .map(v => v.trim())
+    .map(v => normalizeSymbol(v))
     .filter(Boolean);
-  return raw.map(toSymbol);
+  return raw; // no USDT coercion
 }
 
 function parseBinsParam(s: string | null | undefined, dflt = 128) {
@@ -106,14 +116,36 @@ async function loadPoints(symbol: string, windowKey: WindowKey, binsN: number): 
 export async function GET(req: Request) {
   try {
     const url = new URL(req.url);
-    const coins = parseCoinsParam(url.searchParams.get('coins'));
+
+    // --- NEW: read Settings once (coin selector + timing) -------------------
+    const settings = await getSettings(); // server truth: { coinUniverse, timing }
+
+    // Coins: prefer ?coins=...; else use Settings.coinUniverse (skip bare USDT to avoid "USDTUSDT")
+    const coinsParam = url.searchParams.get('coins');
+    const coinsFromQuery = parseCoinsParam(coinsParam);
+    const coinsFromSettings = (settings.coinUniverse ?? [])
+      .map(s => String(s || '').trim().toUpperCase())
+      .filter(Boolean)
+      .filter(c => c !== 'USDT') // avoid generating USDTUSDT
+      .map(toSymbol);
+
+    const coins = (coinsFromQuery.length ? coinsFromQuery : coinsFromSettings);
+
     const windowKey = parseWindow(url.searchParams.get('window'));
     const binsN = parseBinsParam(url.searchParams.get('bins'), 128);
     const appSessionId = (url.searchParams.get('sessionId') ?? 'ui').slice(0, 64);
     const now = Date.now();
 
     if (!coins.length) {
-      return NextResponse.json({ ok: true, symbols: [], out: {}, window: windowKey, ts: now });
+      return NextResponse.json({
+        ok: true,
+        symbols: [],
+        out: {},
+        window: windowKey,
+        ts: now,
+        // NEW: surface timing so the UI can align refresh/secondary cycles
+        timing: settings.timing ?? undefined,
+      });
     }
 
     const out: Record<string, any> = {};
@@ -186,8 +218,8 @@ export async function GET(req: Request) {
           // --- cards for UI tiles ------------------------------------------------
           cards: {
             opening: {
-              benchmark: ss.openingPrice,       // opening card: big number
-              pct24h: ss.snapPrev?.pct24h ?? pct24h, // small caption (at open)
+              benchmark: ss.openingPrice,             // opening card: big number
+              pct24h: ss.snapPrev?.pct24h ?? pct24h,  // small caption (at open)
             },
             live: {
               benchmark: ss.snapCur?.price ?? lastPrice,   // live-market benchmark
@@ -249,7 +281,15 @@ export async function GET(req: Request) {
 
     // UI contract: { symbols, out, window, ts }
     const symbols = Object.keys(out);
-    return NextResponse.json({ ok: true, symbols, out, window: windowKey, ts: now });
+    return NextResponse.json({
+      ok: true,
+      symbols,
+      out,
+      window: windowKey,
+      ts: now,
+      // NEW: echo timing so client can honor autoRefresh/secondary cycles
+      timing: settings.timing ?? undefined,
+    });
   } catch (err: any) {
     console.error('bins route failed', err);
     return NextResponse.json({ ok: false, error: String(err?.message ?? err) }, { status: 500 });

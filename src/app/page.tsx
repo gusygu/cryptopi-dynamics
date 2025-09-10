@@ -1,156 +1,303 @@
 "use client";
-import "./globals.css";
-import { useCallback, useEffect, useRef, useState } from "react";
-import StatusCard from "@/components/StatusCard";
-import TimerBar from "@/components/TimeBar";
-import Legend from "@/components/Legend";
-import Matrix from "@/components/Matrix";
-import MeaAuxCard from "@/auxiliary/mea_aux/ui/MeaAuxCard";
-import CinAuxTable from "@/auxiliary/cin-aux/ui/CinAuxTable";
 
-type TsKeys = "benchmark" | "delta" | "pct24h" | "id_pct" | "pct_drv";
-type Flags = { frozen: boolean[][] } | null;
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import NavBar from "@/components/NavBar";
+import { useSettings } from "@/lib/settings/provider";
+import MeaAuxCard from "@/auxiliary/mea_aux/ui/MeaAuxCard";
+import CinAuxPanel from "@/auxiliary/cin-aux/ui/CinAuxTable";
+
+/* ---------- Types ---------- */
+type TsKey = "benchmark" | "pct24h" | "delta" | "id_pct" | "pct_drv";
+type Grid = (number | null)[][];
+type FlagGrid = boolean[][];
+type Flags = { frozen?: FlagGrid; bridged?: FlagGrid } | null;
 type MatricesResp = {
   ok: boolean;
   coins: string[];
-  ts: Record<TsKeys, number | null>;
-  prevTs?: Record<TsKeys, number | null>;
-  matrices: Record<TsKeys, (number | null)[][] | null>;
-  flags: Record<TsKeys, Flags | null>;
+  ts?: Partial<Record<TsKey, number>>;
+  matrices: Partial<Record<TsKey, Grid>>;
+  flags?: Partial<Record<TsKey, Flags>>;
+  _cache?: string;
 };
+type Disposition = "both" | "rows" | "cols";
 
-const APP_SESSION_ID = "dev-session";
+/* ---------- Helpers ---------- */
+const nullGrid = (n: number): Grid =>
+  Array.from({ length: n }, () => Array(n).fill(null) as (number | null)[]);
 
-export default function Page() {
+// ⬇️ add explicit return types so downstream infers (v,j) correctly
+const ensureGrid = (g: any, n: number): Grid =>
+  Array.isArray(g) ? (g as Grid) : nullGrid(n);
+
+const ensureFlag = (g: any, n: number): FlagGrid =>
+  Array.isArray(g) ? (g as FlagGrid) : Array.from({ length: n }, () => Array(n).fill(false));
+
+function fmtValue(title: string, v: number | null): string {
+  if (v == null) return "—";
+  if (/pct24h|%24h|id_pct/i.test(title)) return `${(Number(v) * 100).toFixed(2)}%`;
+  return Number(v).toFixed(6);
+}
+
+// precedence: purple (frozen) > grey (bridged) > yellow (===0) > green/red
+function cellClasses({ value, frozen, bridged }: { value: number | null; frozen?: boolean; bridged?: boolean }) {
+  if (frozen) return "bg-violet-900/40 text-violet-200 border-violet-700/50";
+  if (bridged) return "bg-slate-700/35 text-slate-200 border-slate-600/40";
+  if (value == null) return "bg-slate-900/40 text-slate-500 border-slate-800/40";
+  if (value === 0) return "bg-amber-900/30 text-amber-200 border-amber-700/40";
+
+  const v = Number(value);
+  const m = Math.abs(v);
+
+  const pos = [
+    "bg-emerald-900/20 text-emerald-200 border-emerald-800/25",
+    "bg-emerald-900/35 text-emerald-200 border-emerald-800/40",
+    "bg-emerald-900/55 text-emerald-100 border-emerald-800/60",
+    "bg-emerald-900/75 text-emerald-100 border-emerald-800/80",
+  ];
+  const neg = [
+    "bg-red-950/30 text-red-200 border-red-900/40",
+    "bg-red-900/45 text-red-200 border-red-800/55",
+    "bg-red-900/65 text-red-100 border-red-800/75",
+    "bg-red-900/85 text-red-100 border-red-800/90",
+  ];
+
+  const idx = m < 0.0005 ? 0 : m < 0.002 ? 1 : m < 0.01 ? 2 : 3;
+  return v > 0 ? pos[idx] : neg[idx];
+}
+
+function ValuePill({
+  title, v, frozen, bridged,
+}: { title: string; v: number | null; frozen?: boolean; bridged?: boolean }) {
+  return (
+    <span
+      className={[
+        "inline-flex min-w-[80px] items-center justify-center rounded-lg",
+        "px-1.5 py-0.5 font-mono tabular-nums text-[11px] border shadow-inner",
+      cellClasses({ value: v, frozen, bridged }),
+      ].join(" ")}
+      title={v == null ? "—" : String(v)}
+    >
+      {fmtValue(title, v)}
+    </span>
+  );
+}
+
+/* -------------------------------- PAGE -------------------------------- */
+
+export default function MatricesPage() {
+  const { settings } = useSettings();
+
+  const baseMs = Math.max(1000, Number(settings.timing?.autoRefreshMs ?? 40_000));
+  const secondaryEnabled = !!settings.timing?.secondaryEnabled;
+  const secondaryCycles = Math.max(1, Math.min(10, Number(settings.timing?.secondaryCycles ?? 3)));
+
+  const universe = useMemo<string[]>(
+    () => (settings.coinUniverse?.length ? settings.coinUniverse : []),
+    [settings.coinUniverse]
+  );
+  const clusters = settings.clustering?.clusters ?? [{ id: "cl-1", name: "Cluster 1", coins: [] }];
+
+  const [applyClustering] = useState(true);
+  const [clusterIdx, setClusterIdx] = useState(0);
+  const [disposition] = useState<Disposition>("both");
+
   const [data, setData] = useState<MatricesResp | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [cinTs, setCinTs] = useState<number | null>(null);
+  const [loading, setLoading] = useState(false);
 
-  const lastRenderedTsRef = useRef<number | null>(null);
-  const lastGateSeenAtRef = useRef<number>(0);
+  const [running, setRunning] = useState(true);
+  const [lastFetchAt, setLastFetchAt] = useState<number | null>(null);
+  const [lastDataTs, setLastDataTs] = useState<number | null>(null);
+  const [tMinus, setTMinus] = useState<number>(baseMs);
 
-  const maxTs = (ts?: Record<TsKeys, number | null>) =>
-    !ts ? null : (Object.values(ts).filter(Boolean) as number[]).reduce((a, b) => Math.max(a, b), 0) || null;
+  const coinsFromCluster = useMemo(
+    () => (clusters[clusterIdx]?.coins ?? []).filter((c) => universe.includes(c)),
+    [clusters, clusterIdx, universe]
+  );
 
-  const fetchStatus = async () => {
-    await fetch(`/api/status?appSessionId=${encodeURIComponent(APP_SESSION_ID)}&t=${Date.now()}`, {
-      cache: "no-store",
-    }).catch(() => {});
-  };
+  const coinsForFetch: string[] = useMemo(() => {
+    if (applyClustering && disposition === "both" && coinsFromCluster.length) return coinsFromCluster;
+    return universe;
+  }, [applyClustering, disposition, coinsFromCluster, universe]);
 
-  const kickPipeline = async () => {
-    // visible log in Network & server console
+  const abortRef = useRef<AbortController | null>(null);
+
+  const fetchLatest = useCallback(async () => {
+    abortRef.current?.abort();
+    const ac = new AbortController();
+    abortRef.current = ac;
     try {
-      const r = await fetch(`/api/pipeline/run-once?t=${Date.now()}`, { method: "POST", cache: "no-store" });
-      const j = await r.json().catch(() => ({}));
-      console.log("[ui] pipeline/run-once →", j);
-    } catch {}
-  };
+      setLoading(true);
+      setErr(null);
+      setLastFetchAt(Date.now());
 
-  const fetchMatricesLatest = async () => {
-    try {
-      const url = `/api/matrices/latest?appSessionId=${encodeURIComponent(APP_SESSION_ID)}&t=${Date.now()}`;
-      const r = await fetch(url, { cache: "no-store" });
-      if (!r.ok) throw new Error(`matrices/latest ${r.status}`);
+      const url = new URL("/api/matrices/latest", window.location.origin);
+      if (coinsForFetch.length) url.searchParams.set("coins", coinsForFetch.join(","));
+      url.searchParams.set("t", String(Date.now()));
+      const r = await fetch(url, { cache: "no-store", signal: ac.signal });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const j = (await r.json()) as MatricesResp;
-
-      const gateTs = maxTs(j.ts);
-      const now = Date.now();
-
-      if (gateTs && gateTs !== lastRenderedTsRef.current) {
-        lastRenderedTsRef.current = gateTs;
-        lastGateSeenAtRef.current = now;
-        setData(j);
-      } else if (!gateTs || now - (lastGateSeenAtRef.current || 0) > 60_000) {
-        // stale (>60s) or empty → kick a one-off build then try again next tick
-        await kickPipeline();
-        lastGateSeenAtRef.current = now; // throttle kicks
-      }
+      if (!j?.ok) throw new Error("payload not ok");
+      setData(j);
+      const ts = Object.values(j.ts || {}).filter((x): x is number => typeof x === "number");
+      setLastDataTs(ts.length ? Math.max(...ts) : Date.now());
     } catch (e: any) {
-      setErr(String(e?.message || e));
+      if (e?.name !== "AbortError") {
+        setErr(String(e?.message || e));
+        setData(null);
+      }
+    } finally {
+      setLoading(false);
+      setTMinus(baseMs);
     }
-  };
-
-  const fetchCinLatest = async () => {
-    try {
-      const r = await fetch(
-        `/api/cin-aux/latest?appSessionId=${encodeURIComponent(APP_SESSION_ID)}&t=${Date.now()}`,
-        { cache: "no-store" }
-      );
-      const j = await r.json();
-      setCinTs(typeof j?.cycleTs === "number" ? j.cycleTs : null);
-    } catch {
-      setCinTs(null);
-    }
-  };
+  }, [coinsForFetch, baseMs]);
 
   useEffect(() => {
-    // first tick
-    fetchStatus();
-    fetchMatricesLatest();
-    fetchCinLatest();
-    // 5s heartbeat; UI only updates when gateTs advances (~40s)
-    const id = setInterval(() => {
-      fetchStatus();
-      fetchMatricesLatest();
-      fetchCinLatest();
-    }, 5000);
+    if (!running) return;
+    fetchLatest();
+    const id = setInterval(fetchLatest, baseMs);
     return () => clearInterval(id);
-  }, []);
+  }, [running, baseMs, fetchLatest]);
 
-  const getCycleTs = useCallback(() => (cinTs ?? Date.now()), [cinTs]);
+  useEffect(() => {
+    if (!running || !secondaryEnabled) return;
+    let n = 0;
+    const id = setInterval(() => { n++; if (n % secondaryCycles === 0) fetchLatest(); }, baseMs);
+    return () => clearInterval(id);
+  }, [running, secondaryEnabled, secondaryCycles, baseMs, fetchLatest]);
+
+  useEffect(() => {
+    const id = setInterval(() => setTMinus((t) => (t > 1000 ? t - 1000 : 0)), 1000);
+    return () => clearInterval(id);
+  }, [baseMs]);
+
+  useEffect(() => {
+    if (clusterIdx >= clusters.length) setClusterIdx(0);
+  }, [clusters.length, clusterIdx]);
 
   const coins = data?.coins ?? [];
-  const mats = data?.matrices;
+  const mats  = data?.matrices || {};
+  const fl    = data?.flags || {};
+
+  const since = (ms: number) => `${Math.max(0, Math.round(ms / 1000))}s`;
+  const sinceFetch = lastFetchAt ? since(Date.now() - lastFetchAt) : "—";
+  const sinceData  = lastDataTs ? since(Date.now() - lastDataTs) : "—";
+
+  const gBenchmark: Grid = ensureGrid(mats.benchmark, coins.length);
+  const gPct24h:    Grid = ensureGrid(mats.pct24h ?? mats.id_pct, coins.length);
+  const gDelta:     Grid = ensureGrid(mats.delta, coins.length);
+  const gIdPct:     Grid = ensureGrid(mats.id_pct, coins.length);
+  const gPctDrv:    Grid = ensureGrid(mats.pct_drv ?? mats.delta, coins.length);
+
+  const fBenchBr:   FlagGrid = ensureFlag(fl?.benchmark?.bridged, coins.length);
+  const fPctBr:     FlagGrid = ensureFlag(fl?.pct24h?.bridged ?? fl?.id_pct?.bridged, coins.length);
+  const fPctFrozen: FlagGrid = ensureFlag(fl?.pct24h?.frozen  ?? fl?.id_pct?.frozen,  coins.length);
+  const fBenchFrozen: FlagGrid = ensureFlag(fl?.benchmark?.frozen, coins.length);
+  const fDeltaFrozen: FlagGrid = ensureFlag(fl?.delta?.frozen,     coins.length);
+  const fDrvFrozen:   FlagGrid = ensureFlag(fl?.pct_drv?.frozen,   coins.length);
 
   return (
-    <div className="min-h-screen bg-slate-900 text-slate-100 p-4">
-      <header className="mb-4 flex items-center gap-3">
-        <h1 className="text-xl font-semibold">Dynamics — Matrices</h1>
-        <button
-          className="ml-auto rounded-md bg-indigo-600/80 hover:bg-indigo-500 px-3 py-1.5 text-xs"
-          onClick={kickPipeline}
-          title="Trigger one writer pass (dev)"
-        >
-          Force build (dev)
-        </button>
-      </header>
-
-      <StatusCard />
-      <TimerBar />
-      <Legend />
-
-      {err && <div className="text-red-300 mb-2">Error: {err}</div>}
-
-      {mats ? (
-        <div className="grid gap-4 grid-cols-1 md:grid-cols-3">
-          {/* Left column */}
-          <div className="space-y-4">
-            <Matrix title="Benchmark (A/B)" coins={coins} grid={mats.benchmark!} flags={data!.flags.benchmark} kind="abs" ts={data!.ts.benchmark} />
-            <Matrix title="Δ (A/B)"         coins={coins} grid={mats.delta!}     flags={data!.flags.delta}     kind="abs" ts={data!.ts.delta} />
+    <div className="min-h-dvh bg-slate-950 text-slate-100">
+      <NavBar />
+      <div className="mx-auto max-w-[1800px] p-4 lg:p-6 space-y-4">
+        <header className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h1 className="text-2xl lg:text-3xl font-semibold">Dynamics — Matrices</h1>
+            <p className="text-xs text-slate-400">
+              Green = positive · Red = negative · Yellow = 0.000 · Purple = frozen · Grey = bridged (no direct market)
+            </p>
+            <p className="text-xs text-slate-500 flex gap-3 flex-wrap">
+              <span>Metronome: <span className="font-mono">{Math.round(baseMs/1000)}s</span></span>
+              <span>Chronometer: last fetch <span className="font-mono">{sinceFetch}</span> · last data <span className="font-mono">{sinceData}</span></span>
+              <span>Next tick in <span className="font-mono">{Math.max(0, Math.round(tMinus/1000))}s</span></span>
+              <span>Poller: <span className={`font-mono ${running ? "text-emerald-300" : "text-rose-300"}`}>{running ? "running" : "stopped"}</span></span>
+            </p>
           </div>
-          {/* Middle column */}
-          <div className="space-y-4">
-            <Matrix title="%24h (A/B)"      coins={coins} grid={mats.pct24h!}    flags={data!.flags.pct24h}    kind="pct" ts={data!.ts.pct24h} />
-            <Matrix title="id_pct"          coins={coins} grid={mats.id_pct!}    flags={data!.flags.id_pct}    kind="abs" ts={data!.ts.id_pct} />
+          <div className="flex items-center gap-2">
+            <button onClick={() => setRunning(v=>!v)} className={`rounded-xl px-3 py-2 text-xs border ${running ? "border-rose-700/50 hover:bg-rose-900/30" : "border-emerald-700/50 hover:bg-emerald-900/30"}`}>{running ? "Stop" : "Start"} poller</button>
+            <button onClick={() => fetchLatest()} className="rounded-xl border border-slate-800 px-3 py-2 text-sm hover:bg-slate-800">Refresh</button>
           </div>
-          {/* Right column */}
-          <div className="space-y-4">
-            <Matrix title="pct_drv"         coins={coins} grid={mats.pct_drv!}   flags={data!.flags.pct_drv}   kind="abs" ts={data!.ts.pct_drv} flipOverlay />
-            <MeaAuxCard coins={coins} defaultK={7} />
-          </div>
-          {/* CIN full width */}
-          <div className="rounded-2xl bg-slate-800/60 p-3 text-[12px] text-slate-200 border border-slate-700/30 md:col-span-3">
-            <div className="mb-2 flex items-center justify-between">
-              <div className="text-slate-300 font-semibold">CIN Auxiliary</div>
-              <div className="text-slate-400 text-xs">appSession: {APP_SESSION_ID} • cycleTs: {cinTs ?? "—"}</div>
+        </header>
+
+        {data ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 auto-rows-[minmax(480px,auto)]">
+            <MatrixCard title="benchmark (A/B)" coins={coins} grid={gBenchmark} bridged={fBenchBr} frozen={fBenchFrozen} />
+            <MatrixCard title="pct24h (A/B)"    coins={coins} grid={gPct24h}   bridged={fPctBr}   frozen={fPctFrozen} />
+            <MatrixCard title="Δ (A/B)"         coins={coins} grid={gDelta}    frozen={fDeltaFrozen} />
+            <MatrixCard title="id_pct"          coins={coins} grid={gIdPct}    bridged={fPctBr}   frozen={fPctFrozen} />
+            <MatrixCard title="pct_drv"         coins={coins} grid={gPctDrv}   frozen={fDrvFrozen} />
+            <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-0 min-h-[480px] overflow-hidden">
+              <div className="p-5 h-full">
+                <MeaAuxCard
+                  coins={coinsFromCluster}
+                  defaultK={Number((settings.params?.values as any)?.k ?? 7)}
+                  autoRefreshMs={baseMs}
+                />
+              </div>
             </div>
-            <CinAuxTable appSessionId={APP_SESSION_ID} getCycleTs={getCycleTs} />
+
+            <div className="md:col-span-2">
+              <CinAuxPanel title="CIN-AUX" clusterCoins={coinsFromCluster} applyCluster={true} />
+            </div>
           </div>
-        </div>
-      ) : (
-        <div className="text-slate-400">Loading matrices…</div>
-      )}
+        ) : (
+          <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-6 text-slate-400">
+            {err ? `Error: ${err}` : "Loading matrices…"}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Matrix card ---------- */
+function MatrixCard({
+  title, coins, grid, frozen, bridged,
+}: {
+  title: string;
+  coins: string[];
+  grid: Grid;
+  frozen?: FlagGrid;
+  bridged?: FlagGrid;
+}) {
+  const safeGrid: Grid = ensureGrid(grid, coins.length);
+  const Fz: FlagGrid = frozen ?? ensureFlag(undefined, coins.length);
+  const Br: FlagGrid = bridged ?? ensureFlag(undefined, coins.length);
+
+  return (
+    <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-5 min-h-[480px]">
+      <div className="mb-2 flex items-center justify-between">
+        <div className="text-sm font-semibold text-slate-300">{title}</div>
+      </div>
+      <div className="overflow-auto">
+        <table className="min-w-max text-[11px]">
+          <thead>
+            <tr>
+              <th className="w-10"></th>
+              {coins.map((c) => (
+                <th key={c} className="px-1.5 py-1 text-right text-slate-400 font-mono tabular-nums">{c}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {safeGrid.map((row: (number | null)[], i: number) => (
+              <tr key={i}>
+                <th className="pr-2 py-1 text-right text-slate-400 font-mono tabular-nums">{coins[i]}</th>
+                {/* ⬇️ explicit typings for v and j */}
+                {row.map((v: number | null, j: number) => (
+                  <td key={`${i}-${j}`} className="px-0.5 py-0.5">
+                    {i === j ? (
+                      <div className="w-[80px] h-[22px] rounded-lg bg-slate-800/60 border border-slate-700/40" />
+                    ) : (
+                      <ValuePill title={title} v={v} frozen={Fz?.[i]?.[j]} bridged={Br?.[i]?.[j]} />
+                    )}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

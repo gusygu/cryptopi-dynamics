@@ -5,10 +5,9 @@ import { useMeaAux } from "../hooks/useMeaAux";
 
 /** ---------- helpers ---------- */
 
+// fixed 6-decimal output
 const fmt = (x: number | null | undefined) =>
-  x == null || !Number.isFinite(Number(x))
-    ? "—"
-    : Number(x).toLocaleString(undefined, { maximumFractionDigits: 6 });
+  x == null || !Number.isFinite(Number(x)) ? "—" : Number(x).toFixed(6);
 
 /** tier → color (one color per rank, not pos/neg) */
 const tierClass = (t: number) => {
@@ -37,7 +36,14 @@ function buildMaps(data: any, coins: string[]) {
   };
 
   if (Array.isArray(data?.pairs)) {
-    for (const p of data.pairs) set(String(p.base).toUpperCase(), String(p.quote).toUpperCase(), p.value, p.tier_id ?? p.tier ?? p.rank);
+    for (const p of data.pairs) {
+      set(
+        String(p.base).toUpperCase(),
+        String(p.quote).toUpperCase(),
+        p.value,
+        p.tier_id ?? p.tier ?? p.rank
+      );
+    }
   }
 
   const obj = data?.grid ?? data?.values;
@@ -69,7 +75,8 @@ function buildMaps(data: any, coins: string[]) {
         if (v != null) rowVals.push(v);
       }
       rowVals.sort((a, b) => a - b);
-      const q = (p: number) => rowVals[Math.min(rowVals.length - 1, Math.max(0, Math.floor(p * (rowVals.length - 1))))];
+      const q = (p: number) =>
+        rowVals[Math.min(rowVals.length - 1, Math.max(0, Math.floor(p * (rowVals.length - 1))))];
       const q1 = q(0.2), q2 = q(0.4), q3 = q(0.6), q4 = q(0.8);
       for (const qSym of coins) {
         const k = `${b}|${qSym}`;
@@ -90,40 +97,71 @@ function buildMaps(data: any, coins: string[]) {
 
 /** ---------- component ---------- */
 type Props = {
-  initialCoins?: string[];
-  defaultK?: number;
-  autoRefreshMs?: number; // UI timer; hook still gates at ~40s per key
+  /** Title shown on the left of the header */
+  title?: string;
+  /** When clustering is ON, provide the cluster coins here */
+  clusterCoins?: string[] | null;
+  /** Whether clustering is currently applied (for header info only) */
+  applyCluster?: boolean;
+  /** Universe coins (used when clustering is off or cluster empty) */
+  universeCoins?: string[];
+  /** Default k to show/use when the hook starts */
+  kDefault?: number;
+  /** Auto-refresh interval in ms (UI label + hook refreshMs) */
+  autoRefreshMs?: number;
 };
 
 export default function MeaAuxTable({
-  initialCoins = ["BTC", "ETH", "BNB", "SOL", "ADA", "XRP", "PEPE", "USDT"],
-  defaultK = 7,
+  title = "MEA (A/B)",
+  clusterCoins = null,
+  applyCluster = true,
+  universeCoins = ["BTC", "ETH", "BNB", "SOL", "ADA", "XRP", "PEPE", "USDT"],
+  kDefault = 7,
   autoRefreshMs = 40000,
 }: Props) {
-  const { data, coins = initialCoins, setCoins, k = defaultK, setK, loading, error } = useMeaAux({
-    coins: initialCoins,
-    k: defaultK,
+  // Decide which coins we pass to the hook:
+  const coinsToFetch =
+    applyCluster && Array.isArray(clusterCoins) && clusterCoins.length
+      ? clusterCoins
+      : universeCoins;
+
+  const {
+    data,
+    coins = coinsToFetch,
+    setCoins,
+    k = kDefault,
+    setK,
+    loading,
+    error,
+  } = useMeaAux({
+    coins: coinsToFetch,
+    k: kDefault,
     refreshMs: autoRefreshMs,
   });
 
   const coinsU = useMemo(() => coins.map((c: string) => c.toUpperCase()), [coins]);
-
   const { val, tier } = useMemo(() => buildMaps(data, coinsU), [data, coinsU]);
-
   const ttlS = Math.round((autoRefreshMs ?? 40000) / 1000);
 
   return (
     <div className="rounded-2xl bg-slate-900/60 p-3 text-[12px] text-slate-200 border border-slate-700/30">
       {/* Header / controls */}
       <div className="mb-2 flex items-center gap-2">
-        <div className="text-slate-300 font-semibold">mea-aux</div>
+        <div className="text-slate-300 font-semibold">{title}</div>
+        <span className="text-[10px] text-slate-400">
+          {applyCluster ? "clustered" : "universe"} · coins:
+          <span className="font-mono"> {coinsU.length}</span>
+        </span>
         <div className="ml-auto flex items-center gap-2">
           <input
             className="px-2 py-1 rounded-md bg-slate-800 border border-slate-700/50 w-[300px]"
             defaultValue={coinsU.join(",")}
             onBlur={(e) => {
-              const v = e.currentTarget.value.split(",").map(s => s.trim().toUpperCase()).filter(Boolean);
-              if (v.length) setCoins(v);
+              const v = e.currentTarget.value
+                .split(",")
+                .map((s) => s.trim().toUpperCase())
+                .filter(Boolean);
+              if (v.length) setCoins(v as any);
             }}
           />
           <label className="text-slate-400">k</label>
@@ -131,7 +169,7 @@ export default function MeaAuxTable({
             type="number"
             className="w-16 px-2 py-1 rounded-md bg-slate-800 border border-slate-700/50"
             defaultValue={k}
-            onBlur={(e) => setK(Math.max(1, Number(e.currentTarget.value) || defaultK))}
+            onBlur={(e) => setK(Math.max(1, Number(e.currentTarget.value) || kDefault))}
           />
           <span className="text-slate-500">auto-refresh {ttlS}s</span>
         </div>
@@ -139,7 +177,7 @@ export default function MeaAuxTable({
 
       {error && (
         <div className="text-rose-300 text-xs mb-2">
-          mea_aux error: {String(error.message || error)}
+          mea_aux error: {String((error as any)?.message || error)}
         </div>
       )}
 
@@ -150,7 +188,9 @@ export default function MeaAuxTable({
             <tr>
               <th className="px-2 py-2 text-left text-slate-400">BASE \\ QUOTE</th>
               {coinsU.map((q) => (
-                <th key={`h-${q}`} className="px-2 py-2 text-right text-slate-300">{q}</th>
+                <th key={`h-${q}`} className="px-2 py-2 text-right text-slate-300">
+                  {q}
+                </th>
               ))}
             </tr>
           </thead>
@@ -184,13 +224,25 @@ export default function MeaAuxTable({
             ))}
 
             {!coinsU.length && (
-              <tr><td colSpan={coinsU.length + 1} className="px-3 py-4 text-slate-500">no coins</td></tr>
+              <tr>
+                <td colSpan={coinsU.length + 1} className="px-3 py-4 text-slate-500">
+                  no coins
+                </td>
+              </tr>
             )}
             {!loading && val.size === 0 && (
-              <tr><td colSpan={coinsU.length + 1} className="px-3 py-4 text-slate-500">no MEA values yet</td></tr>
+              <tr>
+                <td colSpan={coinsU.length + 1} className="px-3 py-4 text-slate-500">
+                  no MEA values yet
+                </td>
+              </tr>
             )}
             {loading && (
-              <tr><td colSpan={coinsU.length + 1} className="px-3 py-4 text-slate-400">loading…</td></tr>
+              <tr>
+                <td colSpan={coinsU.length + 1} className="px-3 py-4 text-slate-400">
+                  loading…
+                </td>
+              </tr>
             )}
           </tbody>
         </table>

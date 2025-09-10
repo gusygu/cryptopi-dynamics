@@ -1,5 +1,5 @@
 import { Pool } from "pg";
-import type { StrAuxDoc, WindowKey } from "@/lab/str-aux/types";
+import type { StrAuxDoc, WindowKey } from "@/str-aux/types";
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,

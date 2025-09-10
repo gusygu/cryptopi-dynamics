@@ -1,37 +1,54 @@
 // src/app/api/health/route.ts
-import { NextResponse } from 'next/server';
-import { pool } from '@/core/db';
-import { Report, ReportItem, summarizeReport } from '@/lib/types';
+import { NextResponse } from "next/server";
+import { getSettingsServer } from "@/lib/settings/server";
+import { fetchTickersForCoins, fetchOrderBooksForCoins } from "@/sources/binance";
 
-export async function GET() {
-  try {
-    const now = Date.now();
-    let dbOk = false, dbNow: string | null = null;
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
-    try {
-      const r = await pool.query('select now() as now');
-      dbNow = r.rows?.[0]?.now ?? null;
-      dbOk = true;
-    } catch {}
+export async function GET(req: Request) {
+  const now = Date.now();
+  const url = new URL(req.url);
+  const all = url.searchParams.get("all") === "1";
+  const pick = (url.searchParams.get("coin") || "").toUpperCase();
+  const depth = Number(url.searchParams.get("depth") ?? 20);
 
-    const items: ReportItem[] = [
-      { key: 'api:up', label: 'API server', level: 'ok', value: true, ts: now },
-      { key: 'db:pool', label: 'DB pool', level: dbOk ? 'ok' : 'err', value: dbNow, ts: now },
-      { key: 'env:coins', label: 'Env coins', level: process.env.COINS ? 'ok' : 'warn', value: process.env.COINS ?? null, ts: now },
-      { key: 'env:bridge', label: 'Bridge mode', level: 'ok', value: process.env.BRIDGE_MODE ?? null, ts: now },
-      { key: 'env:poll', label: 'Poll interval', level: 'ok', value: Number(process.env.POLL_INTERVAL_MS ?? 40000), ts: now },
-    ];
+  const { coinUniverse } = await getSettingsServer();
+  const coins = (coinUniverse?.length ? coinUniverse : ["BTC","ETH","BNB","SOL","ADA","USDT"])
+    .filter(Boolean);
+  if (!coins.includes("USDT")) coins.push("USDT");
 
-    const report: Report = {
-      id: 'health:' + now,
-      scope: 'system',
-      items,
-      summary: summarizeReport(items),
-      ts: now,
-    };
+  const [tickers, books] = await Promise.all([
+    fetchTickersForCoins(coins),
+    fetchOrderBooksForCoins(coins, (isFinite(depth) && depth > 0 ? (depth as any) : 20)),
+  ]);
 
-    return NextResponse.json(report);
-  } catch (e: any) {
-    return NextResponse.json({ id: 'health:error', scope: 'system', items: [], ts: Date.now(), error: e?.message ?? String(e) }, { status: 500 });
+  const sampleCoin = coins.includes(pick) && pick !== "USDT"
+    ? pick
+    : (coins.find(c => c !== "USDT") ?? "BTC");
+
+  const echo = {
+    coin: sampleCoin,
+    ticker: tickers[sampleCoin] ?? null,
+    orderbook: books[sampleCoin] ?? null,
+  };
+
+  const body: any = {
+    ts: now,
+    coins,
+    symbols: coins.filter(c => c !== "USDT").map(c => `${c}USDT`),
+    counts: { tickers: Object.keys(tickers).length, orderbooks: Object.keys(books).length },
+    echo,
+    ok: !!(echo.ticker && echo.orderbook && Number.isFinite(books[sampleCoin]?.mid)),
+  };
+
+  if (all) {
+    body.echoAll = coins.map(c => ({
+      coin: c,
+      ticker: tickers[c] ?? null,
+      orderbook: books[c] ?? null,
+    }));
   }
+
+  return NextResponse.json(body, { headers: { "Cache-Control": "no-store" } });
 }

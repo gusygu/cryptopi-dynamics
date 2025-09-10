@@ -11,30 +11,23 @@ function normCoins(input: string | null | undefined, settingsCoins: string[]): s
 }
 function coinsRegex(coins: string[]): string | null {
   if (!coins?.length) return null;
-  // Match base-prefix: e.g., BTC*, ETH*, ...
   return `^(${coins.join('|')})`;
 }
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const appSessionId = searchParams.get('appSessionId') || 'dev-session';
+  const cycleTsStr = searchParams.get('cycleTs');
+  const cycleTs = Number(cycleTsStr || '');
 
-  // resolve coins from query or Settings
+  if (!Number.isFinite(cycleTs) || cycleTs <= 0) {
+    return NextResponse.json({ error: 'cycleTs must be a positive number (epoch ms)' }, { status: 400 });
+  }
+
   const settings = await getSettings();
   const coins = normCoins(searchParams.get('coins'), settings.coinUniverse ?? []);
   const rx = coinsRegex(coins);
 
-  const latest = await db.query<{ cycle_ts: string }>(
-    `select max(cycle_ts)::text as cycle_ts
-       from cin_aux_cycle
-      where app_session_id = $1`,
-    [appSessionId]
-  );
-
-  const ts = latest.rows[0]?.cycle_ts ? Number(latest.rows[0].cycle_ts) : null;
-  if (!ts) return NextResponse.json({ appSessionId, cycleTs: null, rows: [] });
-
-  // filter by coins (base prefix) if provided/available
   const sql = rx
     ? `select * from v_cin_aux
          where app_session_id=$1 and cycle_ts=$2 and symbol ~ $3
@@ -43,9 +36,9 @@ export async function GET(req: Request) {
          where app_session_id=$1 and cycle_ts=$2
          order by symbol`;
 
-  const args: any[] = [appSessionId, ts];
+  const args: any[] = [appSessionId, cycleTs];
   if (rx) args.push(rx);
 
   const out = await db.query(sql, args);
-  return NextResponse.json({ appSessionId, cycleTs: ts, rows: out.rows, coins });
+  return NextResponse.json({ appSessionId, cycleTs, rows: out.rows, coins });
 }

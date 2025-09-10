@@ -10,10 +10,10 @@ import type {
 
 // ---- local types for per-column metrics (UI reads these) ----
 type EdgeMetrics = {
-  benchmark: number;   // display with 3-4 dp in UI
+  benchmark: number;   // display with 3–4 dp in UI
   id_pct: number;      // raw, display up to 6 dp
   vTendency?: number;  // numeric tendency per edge
-  swapTag: SwapTag;    // sign flips of pct derivative
+  swapTag: SwapTag;    // sign flips of pct derivative (+ last change)
 };
 
 type DomainArbRow = {
@@ -34,12 +34,8 @@ export function wireConverterSources(s: ConverterSources) {
 }
 
 // ---- small safe-call helpers (support sync/async + swallow errors) ----
-async function tryCall<T>(fn: () => T | Promise<T>): Promise<T | undefined> {
-  try {
-    return await Promise.resolve(fn());
-  } catch {
-    return undefined;
-  }
+async function tryCall<T>(fn: () => Promise<T> | T): Promise<T | undefined> {
+  try { return await fn(); } catch { return undefined; }
 }
 async function tryCallOr<T>(fn: () => T | Promise<T>, fallback: T): Promise<T> {
   try {
@@ -50,15 +46,11 @@ async function tryCallOr<T>(fn: () => T | Promise<T>, fallback: T): Promise<T> {
   }
 }
 
-function makeSwapTagFromValue(v: number): SwapTag {
-  const direction: SwapDirection = v > 0 ? "up" : v < 0 ? "down" : "frozen";
-  return { count: direction === "frozen" ? 0 : 1, direction };
-}
 function swapTagFromDerivatives(derivs?: number[]): SwapTag {
   if (!derivs || derivs.length === 0) return { count: 0, direction: "frozen" };
   let prev = 0;
   let flips = 0;
-  for (const d of derivs as number[]) {        // ← explicit cast to number[]
+  for (const d of derivs as number[]) {
     const s = Math.sign(d);
     if (s !== 0 && prev !== 0 && s !== prev) flips++;
     if (s !== 0) prev = s;
@@ -74,6 +66,7 @@ export type BuildVMOpts = {
   Cb: string;
   candidates: string[];
   coinsUniverse: string[];
+  histLen?: number; // optional override for pair series length (histogram)
 };
 
 export async function buildDomainVM(opts: BuildVMOpts): Promise<DomainVM> {
@@ -82,6 +75,7 @@ export async function buildDomainVM(opts: BuildVMOpts): Promise<DomainVM> {
   }
   const sources = sourcesRef as ConverterSources;
   const { Ca, Cb, candidates, coinsUniverse } = opts;
+  const H = Math.max(16, Number(opts.histLen ?? 64)); // pair-level history length
 
   // 1) Matrices
   const bmGrid = await tryCall(() => sources.matrices.getBenchmarkGrid(coinsUniverse));
@@ -105,7 +99,7 @@ export async function buildDomainVM(opts: BuildVMOpts): Promise<DomainVM> {
     tier: "γ-tier",
   });
 
-  // 5) STR-aux globals for the pair (prefer full stats if provided by provider)
+  // 5) STR-aux globals for the pair (prefer full stats if provider has them)
   const pairStats =
     (await tryCall(() => (sources.str as any).getStats?.({ base: Ca, quote: Cb }))) ?? undefined;
 
@@ -115,9 +109,10 @@ export async function buildDomainVM(opts: BuildVMOpts): Promise<DomainVM> {
 
   // 6) Pair-level series for histogram (pct_drv preferred; else Δ id_pct)
   const idHistPair: number[] =
-    (await tryCall(() => sources.str.getIdPctHistory?.(Ca, Cb, 64))) ?? [];
+    (await tryCall(() => sources.str.getIdPctHistory?.(Ca, Cb, H))) ?? [];
+
   const pctDrvPair: number[] =
-    (await tryCall(() => (sources.str as any).getPctDrvHistory?.(Ca, Cb, 64))) ??
+    (await tryCall(() => (sources.str as any).getPctDrvHistory?.(Ca, Cb, H))) ??
     (() => {
       const out: number[] = [];
       for (let i = 1; i < idHistPair.length; i++) {
@@ -135,7 +130,7 @@ export async function buildDomainVM(opts: BuildVMOpts): Promise<DomainVM> {
     return grid[i]?.[j];
   };
 
-  // per-edge metrics builder
+  // per-edge metrics builder (distinct vTendency, swapTag per edge)
   async function edgeMetrics(from: string, to: string): Promise<EdgeMetrics> {
     const bm = cell(bmGrid, from, to);
     const idp = cell(idGrid, from, to);
@@ -178,7 +173,7 @@ export async function buildDomainVM(opts: BuildVMOpts): Promise<DomainVM> {
       if (s !== 0) prevNZ = s;
     }
 
-    // find last flip index + direction based on change of sign (–→+ = up, +→– = down)
+    // find last flip index + direction based on change of sign
     let lastFlipIdx = -1;
     prevNZ = 0;
     for (let i = 0; i < signs.length; i++) {

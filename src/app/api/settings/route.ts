@@ -1,13 +1,18 @@
 // src/app/api/settings/route.ts
 import { NextResponse } from "next/server";
 import { migrateSettings } from "@/lib/settings/schema";
-
+import { getAll } from "@/lib/settings/server";
 // 1 year
 const MAX_AGE = 60 * 60 * 24 * 365;
 const COOKIE = "appSettings";
 
 export async function GET() {
-  return NextResponse.json({ ok: true, settings: await readCookie() });
+  const settings = await getAll();
+  return NextResponse.json(settings, {
+    headers: {
+      "Cache-Control": "no-store, max-age=0",
+    },
+  });
 }
 
 export async function POST(req: Request) {

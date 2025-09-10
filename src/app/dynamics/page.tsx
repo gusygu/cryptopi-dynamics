@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import ArbTable from "@/app/dynamics/ArbTable";
 import {
   useDomainVM,
@@ -8,14 +8,15 @@ import {
   toMatrix,
   toMetricsPanel,
 } from "@/converters/Converter.client";
+import { useSettings } from "@/lib/settings/provider";
 
 type Pair = { base: string; quote: string };
 
-const COIN_UNIVERSE = (process.env.NEXT_PUBLIC_COINS ?? "BTC,ETH,BNB,SOL,ADA,USDT")
+const ENV_FALLBACK = (process.env.NEXT_PUBLIC_COINS ?? "BTC,ETH,BNB,SOL,ADA,XRP,PEPE,USDT")
   .split(",")
   .map((s) => s.trim().toUpperCase());
 
-// ---------- helpers ----------
+/* ---------- helpers ---------- */
 function getCell(
   grid: number[][] | undefined,
   coins: string[],
@@ -40,29 +41,52 @@ function cellColorFromSigned(v: number) {
   return `hsl(${hue} 70% ${light}%)`;
 }
 
-// ---------- page ----------
+/* ---------- page ---------- */
 export default function DynamicsPage() {
-  const initialPair: Pair =
-    COIN_UNIVERSE.includes("ETH") && COIN_UNIVERSE.includes("USDT")
-      ? { base: "ETH", quote: "USDT" }
-      : { base: COIN_UNIVERSE[0]!, quote: COIN_UNIVERSE[1] ?? COIN_UNIVERSE[0]! };
+  const { settings } = useSettings();
 
-  const [selected, setSelected] = useState<Pair>(initialPair);
+  // Universe & cluster come from Settings now (fallback to env only if empty)
+  const universe = useMemo(
+    () => (settings.coinUniverse?.length ? settings.coinUniverse : ENV_FALLBACK),
+    [settings.coinUniverse]
+  );
+  const cluster1 = useMemo(
+    () =>
+      settings.clustering?.clusters?.[0]?.coins?.length
+        ? settings.clustering.clusters[0].coins
+        : universe.slice(0, 3),
+    [settings.clustering?.clusters, universe]
+  );
 
-  const candidates = useMemo(() => {
-    const pool = COIN_UNIVERSE.filter((c) => c !== selected.base && c !== selected.quote);
-    return pool.slice(0, 4);
-  }, [selected.base, selected.quote]);
+  // Selected pair – keep valid w.r.t. current universe
+  const [selected, setSelected] = useState<Pair>(() => {
+    const [a, b] = universe;
+    return { base: a ?? "ETH", quote: b ?? "USDT" };
+  });
+  useEffect(() => {
+    // if current selection falls outside new universe, reset to first two
+    if (!universe.includes(selected.base) || !universe.includes(selected.quote)) {
+      const [a, b] = universe;
+      setSelected({ base: a ?? "ETH", quote: b ?? "USDT" });
+    }
+  }, [universe, selected.base, selected.quote]);
 
+  // Candidates default to Cluster 1 (from settings)
+  const candidates = useMemo(
+    () => cluster1.filter((c) => c !== selected.base && c !== selected.quote),
+    [cluster1, selected.base, selected.quote]
+  );
+
+  // 🔑 Call converter with SETTINGS-DRIVEN arrays (no stub)
   const { vm, loading, error } = useDomainVM(
     selected.base,
     selected.quote,
-    COIN_UNIVERSE,
+    universe,
     candidates
   );
 
   // safe fallbacks
-  const coins = vm?.coins ?? COIN_UNIVERSE;
+  const coins = vm?.coins ?? universe;
   const matrix = vm ? toMatrix(vm) : { benchmark: undefined, id_pct: undefined as number[][] | undefined };
   const arb    = vm ? toArbTableInput(vm) : { rows: [], wallets: {} as Record<string, number> };
   const panels = vm ? toMetricsPanel(vm)  : {
@@ -98,7 +122,7 @@ export default function DynamicsPage() {
           <Panel title="Interactive Matrix" className="col-span-5">
             <MatrixHeatmap
               coins={coins}
-              idGrid={matrix.mea /* if you later attach MEA grid, show it here; else switch to id_pct */}
+              idGrid={matrix.id_pct /* later: MEA can be shown */}
               onSelect={(i, j) => {
                 if (i === j) return;
                 setSelected({ base: coins[i]!, quote: coins[j]! });
@@ -134,7 +158,7 @@ export default function DynamicsPage() {
               Cb={Cb}
               candidates={candidates}
               wallets={arb.wallets}
-              rows={arb.rows as any}   // ← accept new per-column rows
+              rows={arb.rows as any}
               loading={loading}
             />
           </Panel>
@@ -161,7 +185,7 @@ export default function DynamicsPage() {
   );
 }
 
-// ---------- primitives ----------
+/* ---------- primitives (unchanged) ---------- */
 function Panel({
   title,
   className = "",
@@ -178,7 +202,6 @@ function Panel({
     </div>
   );
 }
-
 function Header({ subtitle }: { subtitle: string }) {
   return (
     <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-3">
@@ -198,7 +221,6 @@ function Header({ subtitle }: { subtitle: string }) {
     </div>
   );
 }
-
 function MatrixHeatmap({
   coins,
   idGrid,
@@ -256,29 +278,16 @@ function MatrixHeatmap({
     </div>
   );
 }
-
-/** Bars-style histogram: uses signed pct derivative (pct_drv). */
-function BarsHistogram({
-  data,
-  heightClass = "h-28",
-}: {
-  data: number[];
-  heightClass?: string;
-}) {
+function BarsHistogram({ data, heightClass = "h-28" }: { data: number[]; heightClass?: string }) {
   const N = data.length;
-  const maxAbs = useMemo(
-    () => Math.max(1e-12, ...data.map((d) => Math.abs(d))),
-    [data]
-  );
+  const maxAbs = useMemo(() => Math.max(1e-12, ...data.map((d) => Math.abs(d))), [data]);
   const barW = 100 / Math.max(1, N);
   return (
     <div className={`w-full ${heightClass}`}>
       <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="w-full h-full">
-        {/* zero baseline */}
         <line x1="0" y1="50" x2="100" y2="50" stroke="#334155" strokeWidth="0.5" />
-        {/* bars */}
         {data.map((v, k) => {
-          const h = (Math.abs(v) / maxAbs) * 48; // leave margin
+          const h = (Math.abs(v) / maxAbs) * 48;
           const x = k * barW + 0.5;
           const y = v >= 0 ? 50 - h : 50;
           const color = v >= 0 ? "#86a9ff" : "#f6a97a";
@@ -288,17 +297,15 @@ function BarsHistogram({
     </div>
   );
 }
-
 function HistogramLegend() {
   return (
     <div className="mt-2 flex items-center gap-4 text-[11px] text-slate-400">
       <LegendSwatch color="#86a9ff" label="positive (up)" />
       <LegendSwatch color="#f6a97a" label="negative (down)" />
-      <LegendLine   color="#334155" label="zero baseline" />
+      <LegendLine color="#334155" label="zero baseline" />
     </div>
   );
 }
-
 function LegendSwatch({ color, label }: { color: string; label: string }) {
   return (
     <div className="flex items-center gap-2" aria-label={label}>
@@ -307,7 +314,6 @@ function LegendSwatch({ color, label }: { color: string; label: string }) {
     </div>
   );
 }
-
 function LegendLine({ color, label }: { color: string; label: string }) {
   return (
     <div className="flex items-center gap-2" aria-label={label}>
@@ -344,7 +350,6 @@ function PairMarketWallet({
         </div>
       </div>
 
-      {/* USDT Bridge line (bm & id_pct for Ca→USDT and USDT→Cb) */}
       <div className="mb-2 rounded-xl border border-slate-800 bg-slate-950/40 p-2 text-xs">
         <div className="text-slate-400 mb-1">USDT bridge</div>
         <div className="grid grid-cols-2 gap-2 font-mono tabular-nums">
@@ -359,7 +364,6 @@ function PairMarketWallet({
         </div>
       </div>
 
-      {/* Wallet cards (no "usdt bridged" line anymore) */}
       <div className="grid grid-cols-3 gap-2 text-xs">
         <WalletPill title={base} amount={wBase} />
         <WalletPill title={quote} amount={wQuote} />
@@ -368,7 +372,6 @@ function PairMarketWallet({
     </div>
   );
 }
-
 function WalletPill({ title, amount }: { title: string; amount: number }) {
   return (
     <div className="rounded-xl bg-slate-800/60 border border-slate-700 p-2">
@@ -379,7 +382,6 @@ function WalletPill({ title, amount }: { title: string; amount: number }) {
     </div>
   );
 }
-
 function CinAuxTable({
   pair,
   rows,
@@ -426,7 +428,6 @@ function CinAuxTable({
     </div>
   );
 }
-
 function MeaMiniCard({ value, tier }: { value: number; tier: string }) {
   return (
     <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
@@ -440,16 +441,7 @@ function MeaMiniCard({ value, tier }: { value: number; tier: string }) {
     </div>
   );
 }
-
-function StrAuxCard({
-  gfm,
-  shift,
-  vTendency,
-}: {
-  gfm: number;
-  shift: number;
-  vTendency: number;
-}) {
+function StrAuxCard({ gfm, shift, vTendency }: { gfm: number; shift: number; vTendency: number }) {
   return (
     <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
       <div className="text-[11px] uppercase tracking-wide text-slate-400">str-aux</div>
@@ -461,7 +453,6 @@ function StrAuxCard({
     </div>
   );
 }
-
 function KV({ k, v }: { k: string; v: number | string }) {
   return (
     <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-2">

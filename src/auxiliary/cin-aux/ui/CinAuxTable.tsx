@@ -1,110 +1,138 @@
-// src/auxiliary/cin-aux/ui/CinAuxTable.tsx
-'use client';
+"use client";
 
-import * as React from 'react';
-import { useCinAuxLive } from '@/auxiliary/cin-aux/hooks/useCinAuxLive';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSettings } from "@/lib/settings/provider";
 
-type Row = {
-  app_session_id: string;
-  cycle_ts: number;
+type CinRow = {
   symbol: string;
-  wallet_usdt: number;
-  profit_usdt: number;
-  imprint_cycle_usdt: number;
-  luggage_cycle_usdt: number;
-  imprint_app_session_usdt: number;
-  luggage_app_session_usdt: number;
+  wallet?: number;
+  profit?: number;
+  imprint_session?: number;
+  imprint_cycle?: number;
+  luggage_session?: number;
+  luggage_cycle?: number;
 };
 
-type Props = {
+type CinLatestResp = {
+  ok?: boolean;
+  rows?: CinRow[];
+  ts?: number;
   appSessionId?: string;
-  getCycleTs?: () => number;         // sync default below keeps hook happy
-  className?: string;
 };
 
-const fmt = (n: number | null | undefined) =>
-  typeof n === 'number' && Number.isFinite(n) ? n.toLocaleString(undefined, { maximumFractionDigits: 6 }) : '—';
+export default function CinAuxPanel({
+  title = "CIN Auxiliary",
+  clusterCoins,
+  applyCluster = false,
+}: {
+  title?: string;
+  clusterCoins?: string[] | null;
+  applyCluster?: boolean;
+}) {
+  const { settings } = useSettings();
 
-export default function CinAuxTable({
-  appSessionId = 'dev-session',
-  getCycleTs = () => Date.now(),
-  className = '',
-}: Props) {
-  const getCycleTsSync = React.useCallback((): number => {
+  // timing from settings
+  const baseMs = Math.max(500, Number(settings.timing?.autoRefreshMs ?? 40_000));
+  const secondaryEnabled = !!settings.timing?.secondaryEnabled;
+  const secondaryCycles = Math.max(1, Math.min(10, Number(settings.timing?.secondaryCycles ?? 3)));
+
+  // coins from settings unless cluster forced
+  const universe = useMemo(() => settings.coinUniverse ?? [], [settings.coinUniverse]);
+  const coins = useMemo(
+    () => (applyCluster && clusterCoins?.length ? clusterCoins : universe),
+    [applyCluster, clusterCoins, universe]
+  );
+
+  const [data, setData] = useState<CinLatestResp | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const fetcher = useCallback(async () => {
     try {
-      const v = Number(getCycleTs());
-      return Number.isFinite(v) && v > 0 ? v : Date.now();
-    } catch {
-      return Date.now();
+      setLoading(true);
+      setErr(null);
+      const url = new URL("/api/cin-aux/latest", window.location.origin);
+      url.searchParams.set("t", String(Date.now()));
+      const r = await fetch(url, { cache: "no-store" });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const j = (await r.json()) as CinLatestResp;
+      setData(j);
+    } catch (e: any) {
+      setErr(String(e?.message || e));
+      setData(null);
+    } finally {
+      setLoading(false);
     }
-  }, [getCycleTs]);
+  }, []);
 
-  const { rows, loading, error } = useCinAuxLive({
-    appSessionId,
-    getCycleTs: getCycleTsSync,
-  }) as { rows: Row[]; loading: boolean; error?: Error | null };
+  useEffect(() => {
+    fetcher();
+    const id = setInterval(fetcher, baseMs);
+    return () => clearInterval(id);
+  }, [fetcher, baseMs]);
+
+  // secondary loop
+  const cyclesRef = useRef(0);
+  useEffect(() => {
+    if (!secondaryEnabled) return;
+    cyclesRef.current = 0;
+    const id = setInterval(async () => {
+      cyclesRef.current++;
+      if (cyclesRef.current % secondaryCycles === 0) await fetcher();
+    }, baseMs);
+    return () => clearInterval(id);
+  }, [secondaryEnabled, secondaryCycles, baseMs, fetcher]);
+
+  // filter rows to selector/cluster coins
+  const all = data?.rows ?? [];
+  const setCoins = new Set(coins);
+  const rows = all.filter((r) => setCoins.has((r.symbol || "").toUpperCase()));
 
   return (
-    <div className={`rounded-2xl bg-slate-900/60 p-3 text-[12px] text-slate-200 border border-slate-700/30 ${className}`}>
-      {error && <div className="text-red-400 text-sm mb-3">cin_aux error: {String(error.message || error)}</div>}
+    <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-5">
+      <div className="mb-2 flex items-center justify-between">
+        <div className="text-sm font-semibold text-slate-300">{title}</div>
+        <div className="text-xs text-slate-500">
+          {loading ? "Loading…" : err ? `Error: ${err}` : data?.ts ? `ts: ${new Date(data.ts).toLocaleTimeString()}` : "—"}
+        </div>
+      </div>
 
-      <div className="overflow-x-auto rounded-xl border border-slate-800/60 bg-slate-900">
-        <table className="min-w-full text-sm">
-          <thead className="bg-slate-800/60 text-slate-300">
-            <tr>
-              <Th>Symbol</Th>
-              <Th className="text-right">Wallet (USDT)</Th>
-              <Th className="text-right">Profit (USDT)</Th>
-              <Th className="text-right">Imprint (cycle)</Th>
-              <Th className="text-right">Luggage (cycle)</Th>
-              <Th className="text-right">Imprint (session)</Th>
-              <Th className="text-right">Luggage (session)</Th>
+      <div className="overflow-auto">
+        <table className="w-full text-[12px]">
+          <thead>
+            <tr className="text-slate-400">
+              <th className="text-left px-2 py-2">Symbol</th>
+              <th className="text-right px-2 py-2">Wallet (USDT)</th>
+              <th className="text-right px-2 py-2">Profit (USDT)</th>
+              <th className="text-right px-2 py-2">Imprint (session)</th>
+              <th className="text-right px-2 py-2">Luggage (session)</th>
+              <th className="text-right px-2 py-2">Imprint (cycle)</th>
+              <th className="text-right px-2 py-2">Luggage (cycle)</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-800/70">
-            {loading && (
+          <tbody>
+            {rows.length ? (
+              rows.map((r) => (
+                <tr key={r.symbol} className="border-t border-slate-800">
+                  <td className="px-2 py-1 font-semibold">{r.symbol}</td>
+                  <td className="px-2 py-1 text-right font-mono tabular-nums">{(r.wallet ?? 0).toFixed(2)}</td>
+                  <td className="px-2 py-1 text-right font-mono tabular-nums">{(r.profit ?? 0).toFixed(2)}</td>
+                  <td className="px-2 py-1 text-right font-mono tabular-nums">{(r.imprint_session ?? 0).toFixed(0)}</td>
+                  <td className="px-2 py-1 text-right font-mono tabular-nums">{(r.luggage_session ?? 0).toFixed(0)}</td>
+                  <td className="px-2 py-1 text-right font-mono tabular-nums">{(r.imprint_cycle ?? 0).toFixed(0)}</td>
+                  <td className="px-2 py-1 text-right font-mono tabular-nums">{(r.luggage_cycle ?? 0).toFixed(0)}</td>
+                </tr>
+              ))
+            ) : (
               <tr>
-                <td colSpan={7} className="px-4 py-6 text-slate-400">loading…</td>
+                <td colSpan={7} className="px-2 py-6 text-center text-slate-400">
+                  no CIN rows for this cycle/session yet
+                </td>
               </tr>
             )}
-
-            {!loading && rows?.length === 0 && (
-              <tr>
-                <td colSpan={7} className="px-4 py-6 text-slate-500">no CIN rows for this cycle/session yet</td>
-              </tr>
-            )}
-
-            {!loading && rows?.map((r) => (
-              <tr key={`${r.app_session_id}-${r.cycle_ts}-${r.symbol}`} className="hover:bg-slate-800/30">
-                <Td className="font-medium text-slate-200">{r.symbol}</Td>
-                <TdRight className="font-mono tabular-nums tracking-tight">{fmt(r.wallet_usdt)}</TdRight>
-                <TdRight className={`font-mono tabular-nums tracking-tight ${posNeg(r.profit_usdt)}`}>{fmt(r.profit_usdt)}</TdRight>
-                <TdRight className={`font-mono tabular-nums tracking-tight ${posNeg(r.imprint_cycle_usdt)}`}>{fmt(r.imprint_cycle_usdt)}</TdRight>
-                <TdRight className={`font-mono tabular-nums tracking-tight ${posNeg(r.luggage_cycle_usdt)}`}>{fmt(r.luggage_cycle_usdt)}</TdRight>
-                <TdRight className={`font-mono tabular-nums tracking-tight ${posNeg(r.imprint_app_session_usdt)}`}>{fmt(r.imprint_app_session_usdt)}</TdRight>
-                <TdRight className={`font-mono tabular-nums tracking-tight ${posNeg(r.luggage_app_session_usdt)}`}>{fmt(r.luggage_app_session_usdt)}</TdRight>
-
-              </tr>
-            ))}
           </tbody>
         </table>
       </div>
     </div>
   );
-}
-
-function posNeg(n: number) {
-  if (!Number.isFinite(n)) return '';
-  if (n > 0) return 'text-emerald-400';
-  if (n < 0) return 'text-rose-400';
-  return 'text-slate-300';
-}
-function Th({ children, className = '' }: React.PropsWithChildren<{ className?: string }>) {
-  return <th className={`px-4 py-3 font-semibold text-left ${className}`}>{children}</th>;
-}
-function Td({ children, className = '' }: React.PropsWithChildren<{ className?: string }>) {
-  return <td className={`px-4 py-3 ${className}`}>{children}</td>;
-}
-function TdRight({ children, className = '' }: React.PropsWithChildren<{ className?: string }>) {
-  return <Td className={`text-right tabular-nums ${className}`}>{children}</Td>;
 }

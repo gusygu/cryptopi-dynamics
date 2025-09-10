@@ -3,6 +3,19 @@ import { db } from '@/core/db';
 import { compileRoutes } from '@/auxiliary/cin-aux/flow/compiler';
 import { runRoutes } from '@/auxiliary/cin-aux/flow/coordinator';
 import { buildCinAuxForCycle, persistCinAux } from '@/auxiliary/cin-aux/buildCinAux';
+import { getAll as getSettings } from '@/lib/settings/server';
+
+function normCoins(input: string | null | undefined, settingsCoins: string[]): string[] {
+  const list = (input ? input.split(',') : settingsCoins)
+    .map(s => String(s || '').trim().toUpperCase())
+    .filter(Boolean);
+  const seen = new Set<string>();
+  return list.filter(c => !seen.has(c) && seen.add(c));
+}
+function coinsRegex(coins: string[]): string | null {
+  if (!coins?.length) return null;
+  return `^(${coins.join('|')})`;
+}
 
 export async function GET(req: Request) {
   try {
@@ -28,17 +41,30 @@ export async function GET(req: Request) {
     const rows = await buildCinAuxForCycle(db, appSessionId, cycleTs);
     await persistCinAux(db, rows);
 
-    // return the v_cin_aux view for convenience
-    const out = await db.query(
-      `select * from v_cin_aux where app_session_id=$1 and cycle_ts=$2 order by symbol`,
-      [appSessionId, cycleTs]
-    );
+    // 5) filter final view by coin selector (query or Settings)
+    const settings = await getSettings();
+    const coins = normCoins(searchParams.get('coins'), settings.coinUniverse ?? []);
+    const rx = coinsRegex(coins);
+
+    const sql = rx
+      ? `select * from v_cin_aux
+           where app_session_id=$1 and cycle_ts=$2 and symbol ~ $3
+           order by symbol`
+      : `select * from v_cin_aux
+           where app_session_id=$1 and cycle_ts=$2
+           order by symbol`;
+
+    const args: any[] = [appSessionId, cycleTs];
+    if (rx) args.push(rx);
+
+    const out = await db.query(sql, args);
 
     return NextResponse.json({
       appSessionId, cycleTs,
       compiled: intents.length,
       cinRows: out.rows.length,
-      rows: out.rows
+      rows: out.rows,
+      coins
     });
   } catch (e: any) {
     console.error('[cin.wire] error:', e);
