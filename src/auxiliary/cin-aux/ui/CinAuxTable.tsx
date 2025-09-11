@@ -1,134 +1,114 @@
-"use client";
+'use client';
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useSettings } from "@/lib/settings/provider";
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 
-type CinRow = {
+type Row = {
   symbol: string;
-  wallet?: number;
-  profit?: number;
-  imprint_session?: number;
-  imprint_cycle?: number;
-  luggage_session?: number;
-  luggage_cycle?: number;
+  wallet_usdt: number;
+  profit_usdt: number;
+  session_imprint: number;
+  session_luggage: number;
+  cycle_imprint: number;
+  cycle_luggage: number;
 };
 
-type CinLatestResp = {
-  ok?: boolean;
-  rows?: CinRow[];
+type ApiResp = {
+  ok: boolean;
+  coins: string[];
+  rows: Row[];
+  error?: string;
   ts?: number;
-  appSessionId?: string;
 };
 
-export default function CinAuxPanel({
-  title = "CIN Auxiliary",
-  clusterCoins,
-  applyCluster = false,
+function usd(n: number | null | undefined, d = 2) {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return '—';
+  return v.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d });
+}
+
+export default function CinAuxTable({
+  title = 'CIN-AUX',
+  clusterCoins = [],
+  autoRefreshMs = 45_000,
 }: {
   title?: string;
-  clusterCoins?: string[] | null;
-  applyCluster?: boolean;
+  clusterCoins?: string[];
+  autoRefreshMs?: number;
 }) {
-  const { settings } = useSettings();
-
-  // timing from settings
-  const baseMs = Math.max(500, Number(settings.timing?.autoRefreshMs ?? 40_000));
-  const secondaryEnabled = !!settings.timing?.secondaryEnabled;
-  const secondaryCycles = Math.max(1, Math.min(10, Number(settings.timing?.secondaryCycles ?? 3)));
-
-  // coins from settings unless cluster forced
-  const universe = useMemo(() => settings.coinUniverse ?? [], [settings.coinUniverse]);
-  const coins = useMemo(
-    () => (applyCluster && clusterCoins?.length ? clusterCoins : universe),
-    [applyCluster, clusterCoins, universe]
-  );
-
-  const [data, setData] = useState<CinLatestResp | null>(null);
+  const [rows, setRows] = useState<Row[]>([]);
   const [err, setErr] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [ts, setTs] = useState<number | null>(null);
+  const timer = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const fetcher = useCallback(async () => {
+  // Coins to request: if provided, we pin to these; else the API will use Settings
+  const coinsQS = useMemo(() => {
+    const arr = (clusterCoins ?? []).map(s => String(s).toUpperCase()).filter(Boolean);
+    return arr.length ? `?coins=${encodeURIComponent(arr.join(','))}` : '';
+  }, [clusterCoins.join(',')]);
+
+  async function fetchOnce(signal?: AbortSignal) {
+    setErr(null);
     try {
-      setLoading(true);
-      setErr(null);
-      const url = new URL("/api/cin-aux/latest", window.location.origin);
-      url.searchParams.set("t", String(Date.now()));
-      const r = await fetch(url, { cache: "no-store" });
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const j = (await r.json()) as CinLatestResp;
-      setData(j);
+      // 🔁 IMPORTANT: this is the new endpoint
+      const r = await fetch(`/api/cin-aux${coinsQS}`, { cache: 'no-store', signal });
+      const j = (await r.json()) as ApiResp;
+      if (!r.ok || !j?.ok) throw new Error(j?.error ?? `HTTP ${r.status}`);
+      setRows(Array.isArray(j.rows) ? j.rows : []);
+      setTs(j.ts ?? null);
     } catch (e: any) {
-      setErr(String(e?.message || e));
-      setData(null);
-    } finally {
-      setLoading(false);
+      if (e?.name === 'AbortError') return;
+      setErr(String(e?.message ?? e));
+      setRows([]); // show empty state when endpoint fails
     }
-  }, []);
+  }
 
   useEffect(() => {
-    fetcher();
-    const id = setInterval(fetcher, baseMs);
-    return () => clearInterval(id);
-  }, [fetcher, baseMs]);
-
-  // secondary loop
-  const cyclesRef = useRef(0);
-  useEffect(() => {
-    if (!secondaryEnabled) return;
-    cyclesRef.current = 0;
-    const id = setInterval(async () => {
-      cyclesRef.current++;
-      if (cyclesRef.current % secondaryCycles === 0) await fetcher();
-    }, baseMs);
-    return () => clearInterval(id);
-  }, [secondaryEnabled, secondaryCycles, baseMs, fetcher]);
-
-  // filter rows to selector/cluster coins
-  const all = data?.rows ?? [];
-  const setCoins = new Set(coins);
-  const rows = all.filter((r) => setCoins.has((r.symbol || "").toUpperCase()));
+    const ac = new AbortController();
+    fetchOnce(ac.signal);
+    if (timer.current) clearInterval(timer.current);
+    timer.current = setInterval(() => fetchOnce(ac.signal), Math.max(10_000, autoRefreshMs));
+    return () => { ac.abort(); if (timer.current) clearInterval(timer.current); };
+  }, [coinsQS, autoRefreshMs]);
 
   return (
-    <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-5">
-      <div className="mb-2 flex items-center justify-between">
-        <div className="text-sm font-semibold text-slate-300">{title}</div>
-        <div className="text-xs text-slate-500">
-          {loading ? "Loading…" : err ? `Error: ${err}` : data?.ts ? `ts: ${new Date(data.ts).toLocaleTimeString()}` : "—"}
-        </div>
+    <div className="rounded-2xl border border-slate-800 bg-slate-900/60">
+      <div className="flex items-center justify-between px-4 py-3">
+        <div className="text-sm font-semibold text-slate-200">{title}</div>
+        <div className="text-xs text-slate-400">{err ? `Error: ${err}` : ts ? new Date(ts).toLocaleTimeString() : ''}</div>
       </div>
 
-      <div className="overflow-auto">
-        <table className="w-full text-[12px]">
+      <div className="overflow-x-auto">
+        <table className="min-w-full text-sm">
           <thead>
-            <tr className="text-slate-400">
-              <th className="text-left px-2 py-2">Symbol</th>
-              <th className="text-right px-2 py-2">Wallet (USDT)</th>
-              <th className="text-right px-2 py-2">Profit (USDT)</th>
-              <th className="text-right px-2 py-2">Imprint (session)</th>
-              <th className="text-right px-2 py-2">Luggage (session)</th>
-              <th className="text-right px-2 py-2">Imprint (cycle)</th>
-              <th className="text-right px-2 py-2">Luggage (cycle)</th>
+            <tr className="text-slate-300">
+              <th className="px-4 py-2 text-left">Symbol</th>
+              <th className="px-4 py-2 text-left">Wallet (USDT)</th>
+              <th className="px-4 py-2 text-left">Profit (USDT)</th>
+              <th className="px-4 py-2 text-left">Imprint (session)</th>
+              <th className="px-4 py-2 text-left">Luggage (session)</th>
+              <th className="px-4 py-2 text-left">Imprint (cycle)</th>
+              <th className="px-4 py-2 text-left">Luggage (cycle)</th>
             </tr>
           </thead>
           <tbody>
-            {rows.length ? (
-              rows.map((r) => (
-                <tr key={r.symbol} className="border-t border-slate-800">
-                  <td className="px-2 py-1 font-semibold">{r.symbol}</td>
-                  <td className="px-2 py-1 text-right font-mono tabular-nums">{(r.wallet ?? 0).toFixed(2)}</td>
-                  <td className="px-2 py-1 text-right font-mono tabular-nums">{(r.profit ?? 0).toFixed(2)}</td>
-                  <td className="px-2 py-1 text-right font-mono tabular-nums">{(r.imprint_session ?? 0).toFixed(0)}</td>
-                  <td className="px-2 py-1 text-right font-mono tabular-nums">{(r.luggage_session ?? 0).toFixed(0)}</td>
-                  <td className="px-2 py-1 text-right font-mono tabular-nums">{(r.imprint_cycle ?? 0).toFixed(0)}</td>
-                  <td className="px-2 py-1 text-right font-mono tabular-nums">{(r.luggage_cycle ?? 0).toFixed(0)}</td>
-                </tr>
-              ))
-            ) : (
+            {rows.length === 0 ? (
               <tr>
-                <td colSpan={7} className="px-2 py-6 text-center text-slate-400">
+                <td className="px-4 py-8 text-center text-sky-300/80" colSpan={7}>
                   no CIN rows for this cycle/session yet
                 </td>
               </tr>
+            ) : (
+              rows.map((r) => (
+                <tr key={r.symbol} className="border-t border-slate-800/60">
+                  <td className="px-4 py-2 font-mono">{r.symbol}</td>
+                  <td className="px-4 py-2">{usd(r.wallet_usdt)}</td>
+                  <td className="px-4 py-2">{usd(r.profit_usdt)}</td>
+                  <td className="px-4 py-2">{usd(r.session_imprint)}</td>
+                  <td className="px-4 py-2">{usd(r.session_luggage)}</td>
+                  <td className="px-4 py-2">{usd(r.cycle_imprint)}</td>
+                  <td className="px-4 py-2">{usd(r.cycle_luggage)}</td>
+                </tr>
+              ))
             )}
           </tbody>
         </table>

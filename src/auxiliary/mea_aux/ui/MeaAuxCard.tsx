@@ -4,56 +4,69 @@
 import React, { useEffect, useMemo } from "react";
 import { useMeaAux } from "../hooks/useMeaAux";
 
-/* ---------- small utils ---------- */
+/* ---------- helpers ---------- */
 
+// fixed 6-decimal output
 const fmt = (x: number | null | undefined) =>
-  x == null || !Number.isFinite(Number(x))
-    ? "—"
-    : Number(x).toLocaleString(undefined, { maximumFractionDigits: 6 });
+  x == null || !Number.isFinite(Number(x)) ? "—" : Number(x).toFixed(6);
 
-/** tier → color (one color per rank, not pos/neg) */
-const tierClass = (t: number) => {
-  switch (t) {
-    case 1: return "bg-emerald-900/40 border-emerald-700/40 text-emerald-200";
-    case 2: return "bg-sky-900/40     border-sky-700/40     text-sky-200";
-    case 3: return "bg-amber-900/40   border-amber-700/40   text-amber-200";
-    case 4: return "bg-violet-900/40  border-violet-700/40  text-violet-200";
-    default:return "bg-rose-900/40    border-rose-700/40    text-rose-200";
-  }
-};
+// precedence: frozen (amber) > null (grey) > yellow (===0) > green/red by sign
+function cellClassByValue(v: number | null | undefined, frozen?: boolean) {
+  if (frozen) return "bg-amber-900/60 border-amber-600/50 text-amber-200";
+  if (v == null) return "bg-slate-900 border-slate-800 text-slate-500";
+  if (v === 0) return "bg-amber-900/30 border-amber-700/40 text-amber-200";
 
+  const n = Number(v);
+  const m = Math.abs(n);
+
+  const pos = [
+    "bg-emerald-900/20 text-emerald-200 border-emerald-800/25",
+    "bg-emerald-900/35 text-emerald-200 border-emerald-800/40",
+    "bg-emerald-900/55 text-emerald-100 border-emerald-800/60",
+    "bg-emerald-900/75 text-emerald-100 border-emerald-800/80",
+  ];
+  const neg = [
+    "bg-red-950/30 text-red-200 border-red-900/40",
+    "bg-red-900/45 text-red-200 border-red-800/55",
+    "bg-red-900/65 text-red-100 border-red-800/75",
+    "bg-red-900/85 text-red-100 border-red-800/90",
+  ];
+
+  const idx = m < 0.0005 ? 0 : m < 0.002 ? 1 : m < 0.01 ? 2 : 3;
+  return n > 0 ? pos[idx] : neg[idx];
+}
+
+/** Accept pairs/grid/matrix shapes; collect values and frozen flags */
 function buildMaps(data: any, coins: string[]) {
-  // Accept:
-  //  A) data.pairs: [{base,quote,value,tier_id?,frozen?}]  <-- preferred, includes frozen
-  //  B) data.grid / data.values: { [base]: { [quote]: number } }
-  //  C) data.matrix: number[][] aligned to coins order
   const val = new Map<string, number>();
-  const tier = new Map<string, number>();
   const froz = new Set<string>();
 
-  const put = (b: string, q: string, v: any, t?: any, f?: boolean) => {
+  const put = (b: string, q: string, v: any, f?: boolean) => {
     const k = `${b}|${q}`;
     if (v != null && Number.isFinite(Number(v))) val.set(k, Number(v));
-    if (t != null && Number.isFinite(Number(t))) tier.set(k, Math.max(1, Math.min(5, Number(t))));
     if (f === true) froz.add(k);
   };
 
+  // A) preferred: pairs (includes frozen)
   if (Array.isArray(data?.pairs)) {
     for (const p of data.pairs) {
-      const B = String(p.base).toUpperCase(), Q = String(p.quote).toUpperCase();
-      put(B, Q, p.value, p.tier_id ?? p.tier ?? p.rank, p.frozen === true);
+      const B = String(p.base).toUpperCase();
+      const Q = String(p.quote).toUpperCase();
+      put(B, Q, p.value, p.frozen === true);
     }
   }
 
+  // B) grid/values object
   const obj = data?.grid ?? data?.values;
   if (obj && typeof obj === "object" && !Array.isArray(obj)) {
     for (const [b, row] of Object.entries(obj as Record<string, any>)) {
       for (const [q, v] of Object.entries(row as Record<string, any>)) {
-        put(String(b).toUpperCase(), String(q).toUpperCase(), v, (row as any)?.__tier?.[q], (row as any)?.__frozen?.[q]);
+        put(String(b).toUpperCase(), String(q).toUpperCase(), v, (row as any)?.__frozen?.[q]);
       }
     }
   }
 
+  // C) matrix aligned to coins order
   if (Array.isArray(data?.matrix)) {
     const m: any[][] = data.matrix;
     for (let i = 0; i < coins.length; i++) {
@@ -64,41 +77,18 @@ function buildMaps(data: any, coins: string[]) {
     }
   }
 
-  // If still no explicit tiers, derive 1..5 row-wise by quantiles
-  if (tier.size === 0 && val.size) {
-    for (const b of coins) {
-      const rowVals: number[] = [];
-      for (const q of coins) {
-        const v = val.get(`${b}|${q}`);
-        if (v != null) rowVals.push(v);
-      }
-      rowVals.sort((a, b) => a - b);
-      if (!rowVals.length) continue;
-      const qf = (p: number) =>
-        rowVals[Math.min(rowVals.length - 1, Math.max(0, Math.floor(p * (rowVals.length - 1))))];
-      const q1 = qf(0.2), q2 = qf(0.4), q3 = qf(0.6), q4 = qf(0.8);
-      for (const q of coins) {
-        const v = val.get(`${b}|${q}`);
-        const t =
-          v == null ? 3 :
-          v <= q1 ? 1 :
-          v <= q2 ? 2 :
-          v <= q3 ? 3 :
-          v <= q4 ? 4 : 5;
-        tier.set(`${b}|${q}`, t);
-      }
-    }
-  }
-
-  return { val, tier, froz };
+  return { val, froz };
 }
 
 /* ---------- component ---------- */
 
 type Props = {
-  coins?: string[];        // optional fixed set; defaults to common list
-  defaultK?: number;       // initial k
-  autoRefreshMs?: number;  // UI cadence; hook still gates ~40s internally
+  /** Coin list to render (and fetch through the hook) */
+  coins?: string[];
+  /** Initial k value passed to the MEA builder */
+  defaultK?: number;
+  /** UI refresh cadence; API layer is still cache/rate-limited internally */
+  autoRefreshMs?: number;
 };
 
 export default function MeaAuxCard({
@@ -106,7 +96,6 @@ export default function MeaAuxCard({
   defaultK = 7,
   autoRefreshMs = 40000,
 }: Props) {
-  // Reuse your table's functional logic (auto-start interval, refresh on k change)
   const aux = useMeaAux({
     coins,
     k: defaultK,
@@ -127,17 +116,16 @@ export default function MeaAuxCard({
   }, []);
 
   const coinsU = useMemo(() => coins.map((c) => c.toUpperCase()), [coins]);
-  const { val, tier, froz } = useMemo(() => buildMaps(data, coinsU), [data, coinsU]);
+  const { val, froz } = useMemo(() => buildMaps(data, coinsU), [data, coinsU]);
 
   const errText = error ? String((error as any)?.message ?? error) : aux?.err ?? "";
-
   const ttlS = Math.round((autoRefreshMs ?? 40000) / 1000);
 
   return (
     <div className="rounded-2xl bg-slate-900/60 p-3 text-[12px] text-slate-200 border border-slate-700/30">
-      {/* header: title + small k field (no coins box, no auto-refresh) */}
+      {/* header */}
       <div className="mb-2 flex items-center gap-2">
-        <div className="text-slate-300 font-semibold">med-aux</div>
+        <div className="text-slate-300 font-semibold">mea-aux</div>
         <div className="ml-auto flex items-center gap-2">
           <label className="text-slate-400">k</label>
           <input
@@ -158,7 +146,7 @@ export default function MeaAuxCard({
 
       {errText && <div className="text-rose-300 text-xs mb-2">mea_aux error: {errText}</div>}
 
-      {/* matrix-like table, pct_drv look */}
+      {/* Full antisymmetric matrix */}
       <div className="overflow-x-auto rounded-xl border border-slate-800/60 bg-slate-900">
         <table className="min-w-full text-xs">
           <thead className="bg-slate-800/60 text-slate-300">
@@ -170,15 +158,15 @@ export default function MeaAuxCard({
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-800/70">
-            {coinsU.map((b) => (
+            {coinsU.map((b, i) => (
               <tr key={`r-${b}`}>
                 <td className="px-2 py-2 text-slate-300 font-semibold">{b}</td>
-                {coinsU.map((q) => {
+                {coinsU.map((q, j) => {
                   const key = `${b}|${q}`;
                   const diag = b === q;
                   const frozen = !diag && froz.has(key);
                   const v = val.get(key);
-                  const t = tier.get(key) ?? 3;
+
                   return (
                     <td key={`c-${key}`} className="px-1 py-1">
                       <div
@@ -187,13 +175,11 @@ export default function MeaAuxCard({
                           "font-mono tabular-nums tracking-tight text-right",
                           diag
                             ? "bg-slate-900 border-slate-800 text-slate-500"
-                            : frozen
-                              ? "bg-amber-900/60 border-amber-600/50 text-amber-200"
-                              : tierClass(t),
+                            : cellClassByValue(v, frozen),
                         ].join(" ")}
-                        title={`${b}/${q}${frozen ? " • FROZEN" : ` • tier ${t}`}`}
+                        title={`${b}/${q}${frozen ? " • FROZEN" : ""}`}
                       >
-                        {diag ? "—" : frozen ? "0" : fmt(v)}
+                        {diag ? "—" : fmt(v)}
                       </div>
                     </td>
                   );

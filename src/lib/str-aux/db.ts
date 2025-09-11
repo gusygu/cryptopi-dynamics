@@ -1,4 +1,4 @@
-import { Pool } from "pg";
+import { Pool } from "pg" ;
 import type { StrAuxDoc, WindowKey } from "@/str-aux/types";
 
 const pool = new Pool({

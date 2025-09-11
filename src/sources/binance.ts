@@ -16,10 +16,17 @@ async function getJson<T=any>(path: string, q?: Record<string, any>) {
   if (!r.ok) throw new Error(`${path} HTTP ${r.status}`);
   return r.json() as Promise<T>;
 }
-const num = (x: any, d=0) => { const n = Number(x); return Number.isFinite(n) ? n : d; };
+const num = (x: any, d=NaN) => { const n = Number(x); return Number.isFinite(n) ? n : d; };
 
 // ---- 24h ticker --------------------------------------------------------------
-export type Ticker24h = { symbol: string; weightedAvgPrice?: string; lastPrice?: string; priceChangePercent?: string; };
+export type Ticker24h = {
+  symbol: string;
+  weightedAvgPrice?: string;
+  lastPrice?: string;
+  priceChangePercent?: string; // percent units (e.g. "0.9397")
+  priceChange?: string;        // absolute delta (same units as lastPrice)
+  openPrice?: string;
+};
 
 export async function fetch24hAll(symbols: string[]): Promise<Ticker24h[]> {
   if (!symbols?.length) return [];
@@ -30,23 +37,38 @@ export async function fetch24hAll(symbols: string[]): Promise<Ticker24h[]> {
     weightedAvgPrice: t.weightedAvgPrice,
     lastPrice: t.lastPrice,
     priceChangePercent: t.priceChangePercent,
+    priceChange: t.priceChange,
+    openPrice: t.openPrice,
   }));
 }
+
 export function mapTickerBySymbol(arr: Ticker24h[]): Record<string, Ticker24h> {
-  const out: Record<string, Ticker24h> = {}; for (const t of arr) out[t.symbol] = t; return out;
+  const out: Record<string, Ticker24h> = {};
+  for (const t of arr) out[t.symbol] = t;
+  return out;
 }
+
 function normCoins(list?: string[]) {
   const set = new Set<string>(), out: string[] = [];
-  for (const c of list ?? []) { const u = String(c||"").trim().toUpperCase(); if (!u || set.has(u)) continue; set.add(u); out.push(u); }
-  if (!set.has("USDT")) out.push("USDT"); return out;
+  for (const c of list ?? []) {
+    const u = String(c||"").trim().toUpperCase();
+    if (!u || set.has(u)) continue; set.add(u); out.push(u);
+  }
+  if (!set.has("USDT")) out.push("USDT");
+  return out;
 }
+
 export async function getSettingsCoins(): Promise<string[]> {
-  const s = await getSettings(); const from = normCoins(s.coinUniverse?.length ? s.coinUniverse : []);
+  const s = await getSettings();
+  const from = normCoins(s.coinUniverse?.length ? s.coinUniverse : []);
   return from.length ? from : normCoins(["BTC","ETH","BNB","SOL","ADA","XRP","PEPE","USDT"]);
 }
+
 export function usdtSymbolsFor(coins: string[]) {
   return coins.filter(c => c !== "USDT").map(c => `${c}USDT`);
 }
+
+// Bulk USDT view used for triangulation (kept as-is, but now types are richer).
 export async function fetchTickersForCoins(coins?: string[]) {
   const uni = normCoins(coins ?? (await getSettingsCoins()));
   const by = mapTickerBySymbol(await fetch24hAll(usdtSymbolsFor(uni)));
@@ -60,12 +82,39 @@ export async function fetchTickersForCoins(coins?: string[]) {
   }
   return out;
 }
-export async function fetchTicker24h(symbol: string): Promise<{
+
+export async function fetchTicker24h(symbol: string): Promise<Ticker24h> {
+  return getJson<Ticker24h>("/api/v3/ticker/24hr", { symbol: symbol.toUpperCase() });
+}
+
+/** Normalized numeric helper: last, pct24h (percent units), delta (absolute) & open */
+export async function fetchTicker24hNum(symbol: string): Promise<{
   symbol: string;
-  lastPrice?: string;
-  priceChangePercent?: string;
+  last: number | null;
+  pct24h: number | null;  // e.g. 0.9397
+  delta: number | null;   // absolute priceChange
+  open: number | null;
 }> {
-  return getJson("/api/v3/ticker/24hr", { symbol: symbol.toUpperCase() });
+  const t = await fetchTicker24h(symbol);
+  const last = num(t.lastPrice, NaN);
+  const pct  = num(t.priceChangePercent, NaN); // percent units
+  let delta  = num(t.priceChange, NaN);
+  // robust open and delta if delta missing
+  let open = num(t.openPrice, NaN);
+  if (!Number.isFinite(open) && Number.isFinite(last) && Number.isFinite(pct)) {
+    const r = pct / 100;
+    open = last / (1 + r);
+  }
+  if (!Number.isFinite(delta) && Number.isFinite(last) && Number.isFinite(open)) {
+    delta = last - open;
+  }
+  return {
+    symbol: t.symbol,
+    last: Number.isFinite(last) ? last : null,
+    pct24h: Number.isFinite(pct) ? pct : null,
+    delta: Number.isFinite(delta) ? delta : null,
+    open: Number.isFinite(open) ? open : null,
+  };
 }
 
 // ---- klines ------------------------------------------------------------------
@@ -81,22 +130,29 @@ export type DepthSnapshot = { lastUpdateId:number; bids:DepthLevel[]; asks:Depth
 export async function fetchOrderBook(symbol: string, limit: 5|10|20|50|100|500|1000 = 100) {
   const depth = await getJson<DepthSnapshot>("/api/v3/depth", { symbol, limit });
   const ts = Date.now();
-  const bestBid = depth.bids.length ? num(depth.bids[0][0]) : NaN;
-  const bestAsk = depth.asks.length ? num(depth.asks[0][0]) : NaN;
+  const bestBid = num(depth.bids[0]?.[0]);
+  const bestAsk = num(depth.asks[0]?.[0]);
   const mid = Number.isFinite(bestBid) && Number.isFinite(bestAsk) ? (bestBid + bestAsk)/2 : NaN;
-  const bidVol = depth.bids.reduce((s, [_,q]) => s + num(q), 0);
-  const askVol = depth.asks.reduce((s, [_,q]) => s + num(q), 0);
+  const bidVol = depth.bids.reduce((s, [_,q]) => s + num(q,0), 0);
+  const askVol = depth.asks.reduce((s, [_,q]) => s + num(q,0), 0);
   return { depth, ts, bestBid, bestAsk, mid, bidVol, askVol };
 }
-export async function fetchOrderBooksForCoins(coins?: string[], limit: 5|10|20|50|100|500|1000 = 100) {
-  const uni = normCoins(coins ?? (await getSettingsCoins()));
+
+export async function fetchOrderBooksForSymbols(
+  symbols: string[],
+  limit: 5|10|20|50|100|500|1000 = 100
+) {
   const out: Record<string,{ mid:number; bidVol:number; askVol:number }> = {};
-  await Promise.all(uni.filter(c => c!=="USDT").map(async c => {
-    const { mid, bidVol, askVol } = await fetchOrderBook(`${c}USDT`, limit);
-    out[c] = { mid, bidVol, askVol };
-  }));
+  await Promise.all(
+    (symbols ?? []).map(async (s) => {
+      const sym = String(s || "").toUpperCase();
+      const { mid, bidVol, askVol } = await fetchOrderBook(sym, limit);
+      out[sym] = { mid, bidVol, askVol };
+    })
+  );
   return out;
 }
+
 export async function fetchBookTicker(symbol: string) {
   const j = await getJson<{ bidPrice:string; askPrice:string }>("/api/v3/ticker/bookTicker", { symbol });
   const bidPrice = num(j.bidPrice), askPrice = num(j.askPrice);
@@ -106,5 +162,6 @@ export async function fetchBookTicker(symbol: string) {
 
 export default {
   fetch24hAll, mapTickerBySymbol, fetchTickersForCoins, getSettingsCoins, usdtSymbolsFor,
-  fetchKlines, fetchOrderBook, fetchOrderBooksForCoins, fetchBookTicker,
+  fetchKlines, fetchOrderBook, fetchOrderBooksForSymbols, fetchBookTicker,
+  fetchTicker24h, fetchTicker24hNum,
 };

@@ -441,6 +441,3 @@ function RowMenu({ ci, onInspect }: { ci: string; onInspect: () => void }) {
     </div>
   );
 }
-
-
-

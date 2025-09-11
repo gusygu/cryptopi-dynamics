@@ -1,3 +1,4 @@
+// src/app/dynamics/page.tsx
 "use client";
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -25,21 +26,30 @@ type Disposition = "both" | "rows" | "cols";
 const nullGrid = (n: number): Grid =>
   Array.from({ length: n }, () => Array(n).fill(null) as (number | null)[]);
 
-// ⬇️ add explicit return types so downstream infers (v,j) correctly
 const ensureGrid = (g: any, n: number): Grid =>
   Array.isArray(g) ? (g as Grid) : nullGrid(n);
 
 const ensureFlag = (g: any, n: number): FlagGrid =>
   Array.isArray(g) ? (g as FlagGrid) : Array.from({ length: n }, () => Array(n).fill(false));
 
+/** Display rules:
+ *  - pct24h: given by Binance already scaled as percent (e.g. 0.9397), show "0.9397%"
+ *  - id_pct: raw fraction (e.g. 0.00019657), show 6 decimals, no '%'
+ *  - benchmark & Δ: 4 decimals
+ *  - everything else: 6 decimals
+ */
 function fmtValue(title: string, v: number | null): string {
   if (v == null) return "—";
-  if (/pct24h|%24h|id_pct/i.test(title)) return `${(Number(v) * 100).toFixed(2)}%`;
+  if (/pct24h|%24h/i.test(title)) return `${Number(v).toFixed(4)}%`; // no extra ×100
+  if (/id_pct/i.test(title)) return Number(v).toFixed(6);
+  if (/benchmark|Δ|\bdelta\b/i.test(title)) return Number(v).toFixed(4);
   return Number(v).toFixed(6);
 }
 
 // precedence: purple (frozen) > grey (bridged) > yellow (===0) > green/red
-function cellClasses({ value, frozen, bridged }: { value: number | null; frozen?: boolean; bridged?: boolean }) {
+function cellClasses({
+  value, frozen, bridged,
+}: { value: number | null; frozen?: boolean; bridged?: boolean }) {
   if (frozen) return "bg-violet-900/40 text-violet-200 border-violet-700/50";
   if (bridged) return "bg-slate-700/35 text-slate-200 border-slate-600/40";
   if (value == null) return "bg-slate-900/40 text-slate-500 border-slate-800/40";
@@ -73,7 +83,7 @@ function ValuePill({
       className={[
         "inline-flex min-w-[80px] items-center justify-center rounded-lg",
         "px-1.5 py-0.5 font-mono tabular-nums text-[11px] border shadow-inner",
-      cellClasses({ value: v, frozen, bridged }),
+        cellClasses({ value: v, frozen, bridged }),
       ].join(" ")}
       title={v == null ? "—" : String(v)}
     >
@@ -115,6 +125,15 @@ export default function MatricesPage() {
     [clusters, clusterIdx, universe]
   );
 
+  // === unified coin list for auxiliary cards: prefer cluster, fallback to universe ===
+  const coinsForAux = useMemo(() => {
+    const arr = (applyClustering && disposition === "both" && coinsFromCluster.length >= 2)
+      ? coinsFromCluster
+      : universe;
+    return arr;
+  }, [applyClustering, disposition, coinsFromCluster, universe]);
+
+  // === matrices fetch ===
   const coinsForFetch: string[] = useMemo(() => {
     if (applyClustering && disposition === "both" && coinsFromCluster.length) return coinsFromCluster;
     return universe;
@@ -183,15 +202,16 @@ export default function MatricesPage() {
   const sinceFetch = lastFetchAt ? since(Date.now() - lastFetchAt) : "—";
   const sinceData  = lastDataTs ? since(Date.now() - lastDataTs) : "—";
 
+  // strictly separate pct24h from id_pct
   const gBenchmark: Grid = ensureGrid(mats.benchmark, coins.length);
-  const gPct24h:    Grid = ensureGrid(mats.pct24h ?? mats.id_pct, coins.length);
+  const gPct24h:    Grid = ensureGrid(mats.pct24h, coins.length); // no fallback
   const gDelta:     Grid = ensureGrid(mats.delta, coins.length);
   const gIdPct:     Grid = ensureGrid(mats.id_pct, coins.length);
-  const gPctDrv:    Grid = ensureGrid(mats.pct_drv ?? mats.delta, coins.length);
+  const gPctDrv:    Grid = ensureGrid(mats.pct_drv, coins.length);
 
-  const fBenchBr:   FlagGrid = ensureFlag(fl?.benchmark?.bridged, coins.length);
-  const fPctBr:     FlagGrid = ensureFlag(fl?.pct24h?.bridged ?? fl?.id_pct?.bridged, coins.length);
-  const fPctFrozen: FlagGrid = ensureFlag(fl?.pct24h?.frozen  ?? fl?.id_pct?.frozen,  coins.length);
+  const fBenchBr:     FlagGrid = ensureFlag(fl?.benchmark?.bridged, coins.length);
+  const fPctBr:       FlagGrid = ensureFlag(fl?.pct24h?.bridged, coins.length);
+  const fPctFrozen:   FlagGrid = ensureFlag(fl?.pct24h?.frozen,  coins.length);
   const fBenchFrozen: FlagGrid = ensureFlag(fl?.benchmark?.frozen, coins.length);
   const fDeltaFrozen: FlagGrid = ensureFlag(fl?.delta?.frozen,     coins.length);
   const fDrvFrozen:   FlagGrid = ensureFlag(fl?.pct_drv?.frozen,   coins.length);
@@ -221,23 +241,31 @@ export default function MatricesPage() {
 
         {data ? (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6 auto-rows-[minmax(480px,auto)]">
-            <MatrixCard title="benchmark (A/B)" coins={coins} grid={gBenchmark} bridged={fBenchBr} frozen={fBenchFrozen} />
-            <MatrixCard title="pct24h (A/B)"    coins={coins} grid={gPct24h}   bridged={fPctBr}   frozen={fPctFrozen} />
+            <MatrixCard title="benchmark (A/B)" coins={coins} grid={gBenchmark} bridged={fBenchBr}   frozen={fBenchFrozen} />
+            <MatrixCard title="pct24h (A/B)"    coins={coins} grid={gPct24h}   bridged={fPctBr}     frozen={fPctFrozen} />
             <MatrixCard title="Δ (A/B)"         coins={coins} grid={gDelta}    frozen={fDeltaFrozen} />
-            <MatrixCard title="id_pct"          coins={coins} grid={gIdPct}    bridged={fPctBr}   frozen={fPctFrozen} />
+            <MatrixCard title="id_pct"          coins={coins} grid={gIdPct}    bridged={fPctBr}     frozen={fPctFrozen} />
             <MatrixCard title="pct_drv"         coins={coins} grid={gPctDrv}   frozen={fDrvFrozen} />
+            
+            {/* MEA-AUX */}
             <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-0 min-h-[480px] overflow-hidden">
               <div className="p-5 h-full">
                 <MeaAuxCard
-                  coins={coinsFromCluster}
+                  key={`mea-${coinsForAux.join("-")}-${baseMs}`}
+                  coins={coinsForAux}
                   defaultK={Number((settings.params?.values as any)?.k ?? 7)}
                   autoRefreshMs={baseMs}
                 />
               </div>
             </div>
 
+            {/* CIN-AUX */}
             <div className="md:col-span-2">
-              <CinAuxPanel title="CIN-AUX" clusterCoins={coinsFromCluster} applyCluster={true} />
+              <CinAuxPanel
+                key={`cin-${coinsForAux.join("-")}-${baseMs}`}
+                title="CIN-AUX"
+                clusterCoins={coinsForAux}
+              />
             </div>
           </div>
         ) : (
@@ -283,7 +311,6 @@ function MatrixCard({
             {safeGrid.map((row: (number | null)[], i: number) => (
               <tr key={i}>
                 <th className="pr-2 py-1 text-right text-slate-400 font-mono tabular-nums">{coins[i]}</th>
-                {/* ⬇️ explicit typings for v and j */}
                 {row.map((v: number | null, j: number) => (
                   <td key={`${i}-${j}`} className="px-0.5 py-0.5">
                     {i === j ? (
