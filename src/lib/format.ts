@@ -42,3 +42,25 @@ export const tsLabel = (ts: number | null | undefined) => {
   const d = new Date(Number(ts));
   return isNaN(d.getTime()) ? '—' : d.toLocaleString();
 };
+
+
+// --- extra format helpers ---
+export const fmt5 = (x: number | null | undefined) =>
+  x == null || !Number.isFinite(x) ? '—' : (Math.abs(Number(x)) < 1e-12 ? 0 : Number(x)).toFixed(5);
+
+export const fmt6 = (x: number | null | undefined) =>
+  x == null || !Number.isFinite(x) ? '—' : (Math.abs(Number(x)) < 1e-12 ? 0 : Number(x)).toFixed(6);
+
+export const fmt0 = (x: number | null | undefined) =>
+  x == null || !Number.isFinite(x) ? '—' : Math.round(Number(x)).toString();
+
+export const fmtPct5 = (x: number | null | undefined) =>
+  x == null || !Number.isFinite(x) ? '—' : `${(Number(x) * 100).toFixed(5)}%`;
+
+// add to src/lib/format.ts
+
+export const fmt4 = (x: number | null | undefined) =>
+  x == null || !Number.isFinite(Number(x)) ? "—" : Number(x).toFixed(4);
+
+export const fmtPct2 = (x: number | null | undefined) =>
+  x == null || !Number.isFinite(Number(x)) ? "—" : `${(Number(x) * 100).toFixed(2)}%`;

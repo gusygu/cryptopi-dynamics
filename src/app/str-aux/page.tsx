@@ -128,6 +128,10 @@ export default function StrAuxPage() {
   const [err, setErr] = useState<string | null>(null);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // NEW: toggles
+  const [showUnverified, setShowUnverified] = useState(false);
+  const [hideNoData, setHideNoData] = useState(true);
+
   // Build UI-side availability from picked coins
   useEffect(() => {
     let cancelled = false;
@@ -137,7 +141,7 @@ export default function StrAuxPage() {
       const crossCand = crossPairsFromCoins(coins);
       const verified = await verifyPreview(crossCand);
       if (cancelled) return;
-      const cross = crossCand.filter(s => verified.has(s));
+      const cross = showUnverified ? crossCand : crossCand.filter(s => verified.has(s));
       const all = uniqUpper([...usdt, ...cross]);
       setAvailableUi({ usdt, cross, all });
       // If nothing selected yet, seed with USDT legs
@@ -145,7 +149,7 @@ export default function StrAuxPage() {
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pickedCoins.join(','), bases.join(',')]);
+  }, [pickedCoins.join(','), bases.join(','), showUnverified]);
 
   // Merge API + UI availability
   const availableUX = useMemo(() => {
@@ -162,16 +166,17 @@ export default function StrAuxPage() {
     setPairs(prev => prev.filter(p => allowed.has(p)));
   }, [availableUX.all.join(','), pairs.length]);
 
-  // fetch bins route (now uses pairs= symbols)
+  // fetch bins route (supports pairs= and allowUnverified)
   const fetchOnce = useCallback(async (opts?: { signal?: AbortSignal }) => {
     setLoading(true);
     setErr(null);
     try {
       const qs = new URLSearchParams();
-      if (pairs.length) qs.set('pairs', pairs.join(',')); // ⬅️ symbols path
+      if (pairs.length) qs.set('pairs', pairs.join(','));
       qs.set('window', windowSel);
       qs.set('bins', '128');
       qs.set('sessionId', 'ui');
+      if (showUnverified) qs.set('allowUnverified', 'true');
 
       const r = await fetch(`/api/str-aux/bins?${qs.toString()}`, { cache: 'no-store', signal: opts?.signal });
       const j = (await r.json()) as BinsResponse;
@@ -190,6 +195,12 @@ export default function StrAuxPage() {
 
       // If nothing selected yet and server proposes a selection, accept it
       if (!pairs.length && j.selected?.length) setPairs(j.selected);
+
+      // NEW: auto-prune selected pairs that returned ok:false (removes “no data” tiles)
+      if (hideNoData && j.symbols?.length) {
+        const okSet = new Set(j.symbols.filter(s => j.out?.[s]?.ok));
+        setPairs(prev => prev.filter(p => okSet.has(p)));
+      }
     } catch (e: any) {
       const name = e?.name ?? '';
       const msg = e?.message ?? String(e ?? '');
@@ -198,7 +209,7 @@ export default function StrAuxPage() {
     } finally {
       setLoading(false);
     }
-  }, [pairs, windowSel]);
+  }, [pairs, windowSel, showUnverified, hideNoData]);
 
   // poller
   useEffect(() => {
@@ -220,13 +231,24 @@ export default function StrAuxPage() {
     return () => { cancelled = true; ac.abort(); if (timer.current) clearInterval(timer.current); };
   }, [fetchOnce, auto, baseMs, secondaryEnabled, secondaryCycles]);
 
-  // pagination
-  const symbols = useMemo(() => (data?.symbols?.length ? data.symbols : pairs), [data?.symbols, pairs]);
+  // pagination — optionally hide no-data in the grid
+  const symbolsAll = useMemo(() => (data?.symbols?.length ? data.symbols : pairs), [data?.symbols, pairs]);
+  const symbols = useMemo(() => {
+    if (!hideNoData) return symbolsAll;
+    const out: string[] = [];
+    for (const s of symbolsAll) {
+      const ok = data?.out?.[s]?.ok;
+      if (ok === undefined) out.push(s);       // if we don't know yet, keep
+      else if (ok) out.push(s);                // keep only “ok”
+    }
+    return out;
+  }, [symbolsAll, data?.out, hideNoData]);
+
   const PAGE_SIZE = 4;
   const pageCount = Math.max(1, Math.ceil(symbols.length / PAGE_SIZE));
   const pageClamped = Math.min(page, pageCount - 1);
   const visible = symbols.slice(pageClamped * PAGE_SIZE, pageClamped * PAGE_SIZE + PAGE_SIZE);
-  useEffect(() => { setPage(0); }, [pairs.join(',')]);
+  useEffect(() => { setPage(0); }, [pairs.join(','), hideNoData]);
 
   // helpers
   const addPair = (s: string) => setPairs(p => uniqUpper([...(p ?? []), s]));
@@ -318,6 +340,22 @@ export default function StrAuxPage() {
             </div>
 
             <div className="ml-auto flex items-center gap-2">
+              <label
+                title="Include all pair combinations (even if not in Binance preview)"
+                className="inline-flex items-center gap-2 px-2 py-1 rounded-lg bg-slate-800/70 border border-slate-700 text-sm"
+              >
+                <input type="checkbox" checked={showUnverified} onChange={e => setShowUnverified(e.target.checked)} />
+                show unverified
+              </label>
+
+              <label
+                title="Automatically remove tiles that return no data"
+                className="inline-flex items-center gap-2 px-2 py-1 rounded-lg bg-slate-800/70 border border-slate-700 text-sm"
+              >
+                <input type="checkbox" checked={hideNoData} onChange={e => setHideNoData(e.target.checked)} />
+                hide no data
+              </label>
+
               <select
                 className="px-2 py-1 text-sm rounded-lg bg-slate-800/70 border border-slate-700 min-w-[260px]"
                 onChange={(e) => { const v = e.target.value; if (v) { addPair(v); e.currentTarget.selectedIndex = 0; } }}
@@ -329,9 +367,11 @@ export default function StrAuxPage() {
                 {availableUX.usdt.filter(s => !pairs.includes(s)).map((s) => (
                   <option key={s} value={s}>{s} · USDT</option>
                 ))}
-                {/* Verified cross */}
+                {/* Verified or All cross (per toggle) */}
                 {availableUX.cross.filter(s => !pairs.includes(s)).map((s) => (
-                  <option key={s} value={s}>{s} · cross</option>
+                  <option key={s} value={s}>
+                    {s} · cross{showUnverified ? ' (unverified ok)' : ''}
+                  </option>
                 ))}
               </select>
 

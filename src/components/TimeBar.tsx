@@ -1,83 +1,73 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { subscribe, getState } from "@/lib/pollerClient";
+import { getMuted, subscribeMet } from "@/lib/metronome";
 
-export default function TimerBar({ periodMs = 40000 }: { periodMs?: number }) {
-  // set start when client mounts to avoid SSR clock drift
-  const startRef = useRef<number | null>(null);
-  const [remaining, setRemaining] = useState<number>(periodMs);
-  const [cycle, setCycle] = useState<number>(1);
+export default function TimerBar() {
+  const [startAt] = useState<number>(() => Date.now());
+  const [chronoNow, setChronoNow] = useState<number>(() => Date.now());
 
-  // initialize start time on client
+  const [rem40, setRem40] = useState<number>(() => getState().remaining40);
+  const [rem120, setRem120] = useState<number>(() => getState().remaining120);
+  const [phase, setPhase] = useState<number>(() => getState().phase);
+  const [cycles, setCycles] = useState<number>(() => getState().cyclesCompleted);
+
+  const audioCtxRef = useRef<AudioContext|null>(null);
+  const mutedRef = useRef<boolean>(getMuted());
+
   useEffect(() => {
-    if (startRef.current == null) startRef.current = Date.now();
+    const unsubMet = subscribeMet(ev => { if (ev.type === "metronome") mutedRef.current = ev.muted; });
+
+    const unsub = subscribe((ev) => {
+      if (ev.type === "state") {
+        setRem40(ev.state.remaining40);
+        setRem120(ev.state.remaining120);
+        setPhase(ev.state.phase);
+        setCycles(ev.state.cyclesCompleted);
+      } else if (ev.type === "tick40") {
+        if (mutedRef.current) return;
+        try {
+          if (!audioCtxRef.current) audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+          const ctx = audioCtxRef.current!;
+          const beep = (f = 880, dur = 0.08, g1 = 0.09) => {
+            const o = ctx.createOscillator();
+            const g = ctx.createGain();
+            o.type = "sine"; o.frequency.value = f;
+            o.connect(g); g.connect(ctx.destination);
+            g.gain.setValueAtTime(0.0001, ctx.currentTime);
+            g.gain.exponentialRampToValueAtTime(g1, ctx.currentTime + 0.01);
+            o.start(); o.stop(ctx.currentTime + dur);
+          };
+          beep();
+          if (ev.isThird) setTimeout(() => beep(980, 0.1, 0.11), 120);
+        } catch {}
+      }
+    });
+
+    const raf = () => { setChronoNow(Date.now()); id = requestAnimationFrame(raf); };
+    let id = requestAnimationFrame(raf);
+    return () => { unsub(); unsubscribeRAF(); unsubMet(); };
+    function unsubscribeRAF(){ cancelAnimationFrame(id); }
   }, []);
 
-  // metronome/chronometer loop
-  useEffect(() => {
-    let rafId: number;
-    let last = performance.now();
-
-    const tick = (now: number) => {
-      const dt = now - last;
-      last = now;
-
-      setRemaining((prev) => {
-        const next = prev - dt;
-        if (next <= 0) {
-          const nextCycle = cycle === 3 ? 1 : cycle + 1;
-          setCycle(nextCycle);
-          // beep: single on cycles 1 & 2; double on wrap to 1
-          try {
-            const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
-            const doBeep = () => {
-              const o = ctx.createOscillator();
-              const g = ctx.createGain();
-              o.type = "sine";
-              o.frequency.value = 880;
-              o.connect(g);
-              g.connect(ctx.destination);
-              g.gain.setValueAtTime(0.0001, ctx.currentTime);
-              g.gain.exponentialRampToValueAtTime(0.09, ctx.currentTime + 0.01);
-              o.start();
-              o.stop(ctx.currentTime + 0.08);
-            };
-            doBeep();
-            if (nextCycle === 1) setTimeout(doBeep, 120);
-          } catch {}
-          return periodMs;
-        }
-        return next;
-      });
-
-      rafId = requestAnimationFrame(tick);
-    };
-
-    rafId = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(rafId);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cycle, periodMs]);
-
-  const secLeft = Math.max(0, Math.ceil(remaining / 1000));
-  const startAt = startRef.current ?? Date.now();
-  const chronoMs = Date.now() - startAt;
-  const s = Math.floor(chronoMs / 1000) % 60;
-  const m = Math.floor(chronoMs / 60000) % 60;
-  const h = Math.floor(chronoMs / 3600000);
-  const pad = (n: number) => String(n).padStart(2, "0");
+  const chrono = useMemo(() => {
+    const ms = Math.max(0, chronoNow - startAt);
+    const s = Math.floor(ms / 1000) % 60;
+    const m = Math.floor(ms / 60000) % 60;
+    const h = Math.floor(ms / 3600000);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const nCycles = Math.floor(ms / 40000);
+    return { label: `${pad(h)}:${pad(m)}::${pad(s)} (${nCycles})` };
+  }, [chronoNow, startAt]);
 
   return (
-  <div className="w-full flex items-center justify-between mb-4">
-    <div className="text-sm text-slate-300">
-      Chronometer:{" "}
-      <span className="font-mono tracking-tight">
-        {`${pad(h)}H:${pad(m)}M:${pad(s)}S`}
-      </span>
+    <div className="w-full flex items-center justify-between mb-4">
+      <div className="text-sm text-slate-300">
+        Chronometer: <span className="font-mono tracking-tight">{chrono.label}</span>
+      </div>
+      <div className="text-sm text-slate-300">
+        Metronome: <span className="font-mono tracking-tight">120s:{rem120}s • 40s:{rem40}s ({phase}/3)</span>
+      </div>
     </div>
-    <div className="text-sm text-slate-300">
-      Metronome:{" "}
-      <span className="font-mono tracking-tight">
-        ({secLeft}s | {cycle}/3)
-      </span>
-    </div>
-  </div>
-);}
+  );
+}

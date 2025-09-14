@@ -142,13 +142,24 @@ export default function CoinPanel({
     render?.cards?.live?.pct_drv ??
     null;
 
+  // ------------------------------ Symbol label (BASE / QUOTE) -------------------
+  const showSym = React.useMemo(() => {
+    const U = String(symbol || '').toUpperCase();
+    const qs = ["USDT","BTC","ETH","BNB","FDUSD","BUSD","TUSD","USDC","TRY"];
+    for (const q of qs) {
+      if (U.endsWith(q) && U.length > q.length) return `${U.slice(0, U.length - q.length)} / ${q}`;
+    }
+    // heuristic fallback (non-destructive)
+    return U.length > 6 ? `${U.slice(0, 3)} / ${U.slice(3)}` : U;
+  }, [symbol]);
+
   return (
     <div className="rounded-2xl border border-[var(--border)] bg-[var(--panel)] shadow-[0_0_0_1px_rgba(255,255,255,0.02)_inset] p-4">
       {/* header */}
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
           <span className="px-2 py-1 rounded-md text-xs font-semibold bg-[var(--panel-2)] border border-[var(--border)]">
-            {symbol}
+            {showSym}
           </span>
           <span className="text-xs text-[var(--muted)]">
             n={render?.n ?? '—'} · bins={render?.bins ?? '—'}

@@ -3,39 +3,38 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
-const links = [
-  { href: "/dynamics", label: "Dynamics" },
-  { href: "/str-aux", label: "STR-AUX" },
-  { href: "/matrices", label: "Matrices" },
-  { href: "/settings", label: "Settings" },
+type Item = { href: string; label: string };
+
+const items: Item[] = [
+  { href: "/",          label: "Dashboard" },
+  { href: "/dynamics",  label: "Matrices"  },
+  { href: "/straux",    label: "Str-aux"   },
+  { href: "/settings",  label: "Settings"  },
+  { href: "/intro",     label: "Intro"     }, // README-ish
 ];
 
-export default function NavBar() {
-  const pathname = (usePathname() || "").replace(/\/+$/, "") || "/";
+export default function NavBar({ className = "" }: { className?: string }) {
+  const pathname = usePathname() || "/";
   return (
-    <nav className="sticky top-0 z-40 backdrop-blur bg-slate-900/70 border-b border-slate-800">
-      <div className="mx-auto max-w-7xl px-4 py-2 flex items-center gap-2">
-        <div className="text-slate-200 font-semibold tracking-wide">CryptoPi</div>
-        <div className="ml-auto flex items-center gap-1">
-          {links.map((l) => {
-            const active = pathname === l.href || pathname.startsWith(l.href + "/");
-            return (
+    <nav className={`w-full rounded-xl bg-slate-900/40 border border-slate-700/40 px-3 py-2 ${className}`}>
+      <ul className="flex flex-wrap items-center gap-1">
+        {items.map((it) => {
+          const active = pathname === it.href || (it.href !== "/" && pathname.startsWith(it.href));
+          const cls = active
+            ? "bg-indigo-600/30 text-indigo-200 border-indigo-500/30"
+            : "bg-slate-800/30 text-slate-200 border-slate-600/30 hover:bg-slate-700/40";
+          return (
+            <li key={it.href}>
               <Link
-                key={l.href}
-                href={l.href}
-                className={[
-                  "px-3 py-1.5 text-sm rounded-lg border transition-colors",
-                  active
-                    ? "bg-slate-800 text-slate-50 border-slate-700"
-                    : "text-slate-300 border-transparent hover:border-slate-700 hover:bg-slate-800/50",
-                ].join(" ")}
+                href={it.href}
+                className={`px-3 py-1.5 text-sm rounded-md border transition ${cls}`}
               >
-                {l.label}
+                {it.label}
               </Link>
-            );
-          })}
-        </div>
-      </div>
+            </li>
+          );
+        })}
+      </ul>
     </nav>
   );
 }
