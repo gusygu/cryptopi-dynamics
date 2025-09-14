@@ -8,6 +8,28 @@ import { getAll as getSettings } from "@/lib/settings/server";
 
 export const dynamic = "force-dynamic";
 
+/* -------------------- optional provider delegation -------------------- */
+/** If a non-HTTP provider exists in the gateway, use it (avoids recursion).
+ *  Implement later in: src/lib/dynamics.gateway.server.ts
+ *  export async function getMeaAuxProvider(args:{ coins:string[], k:number, Ca?:string, Cb?:string }): Promise<{ok:true;coins:string[];k:number;grid:any;tierLabel?:string}>
+ */
+async function tryGatewayProvider(args: { coins: string[]; k: number; Ca?: string; Cb?: string }) {
+  try {
+    const gw = await import("@/lib/dynamics.gateway.server");
+    // look specifically for the non-HTTP provider to avoid calling this same route
+    const fn = (gw as any)?.getMeaAuxProvider as
+      | ((a: { coins: string[]; k: number; Ca?: string; Cb?: string }) => Promise<any>)
+      | undefined;
+    if (typeof fn === "function") {
+      const payload = await fn(args);
+      if (payload && typeof payload === "object") return payload;
+    }
+  } catch {
+    /* noop → fall back to local logic */
+  }
+  return null;
+}
+
 /* ------------------------- helpers ------------------------- */
 
 function normCoin(s: string) { return String(s || "").trim().toUpperCase(); }
@@ -75,6 +97,16 @@ export async function GET(req: NextRequest) {
 
   const kParam = Number(qs.get("k") ?? NaN);
   const kEff = clampK(Number.isFinite(kParam) ? kParam : undefined, coins.length);
+
+  // Optional tier pair (kept for both provider & local paths)
+  const Ca = (qs.get("Ca") || "").toUpperCase() || undefined;
+  const Cb = (qs.get("Cb") || "").toUpperCase() || undefined;
+
+  // 0) Try server gateway provider (non-HTTP) if present
+  const providerPayload = await tryGatewayProvider({ coins, k: kEff, Ca, Cb });
+  if (providerPayload) {
+    return NextResponse.json(providerPayload, { headers: { "Cache-Control": "no-store" }, status: 200 });
+  }
 
   const pool = getPool();
   const keyCoins = coins.join(",");
@@ -197,10 +229,8 @@ export async function GET(req: NextRequest) {
     }
   }
   const tiers = await opt<any>("@/auxiliary/mea_aux/tiers");
-  
-  // Optional tier for a specific Ca/Cb
-  const Ca = (qs.get("Ca") || "").toUpperCase();
-  const Cb = (qs.get("Cb") || "").toUpperCase();
+
+  // Optional tier label for a specific Ca/Cb
   let tierLabel: string | undefined;
   if (Ca && Cb && Array.isArray((grid as any)?.weights)) {
     const idx = Object.fromEntries(coins.map((c, i) => [c, i]));

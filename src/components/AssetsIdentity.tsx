@@ -1,219 +1,415 @@
+// src/components/AssetsIdentity.tsx
 "use client";
 
-import { useMemo } from "react";
-import type { AssetsIdentityProps, HistogramData, NumGrid } from "@/components/contracts";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-const fmt4 = (x: any) => (Number.isFinite(Number(x)) ? Number(x).toFixed(4) : "—");
-const fmt6 = (x: any) => (Number.isFinite(Number(x)) ? Number(x).toFixed(6) : "—");
-const fmt3 = (x: any) => (Number.isFinite(Number(x)) ? Number(x).toFixed(3) : "0.000");
-const fmtPct2 = (dec: any) =>
-  Number.isFinite(Number(dec)) ? `${(Number(dec) * 100).toFixed(2)}%` : "—";
+type Grid = (number | null)[][];
+type MatricesResp = {
+  ok: boolean;
+  coins: string[];
+  matrices: Partial<{ benchmark: Grid; id_pct: Grid; pct24h: Grid }>;
+  ts?: Record<string, number>;
+};
+type StrBinsResp = {
+  ok: boolean;
+  ts?: number;
+  symbols?: string[];
+  out?: Record<
+    string,
+    {
+      ok?: boolean;
+      lastUpdateTs?: number;
+      hist?: { counts?: number[] };
+      // other fields omitted
+    }
+  >;
+};
 
-// -------- Mini SVG Histogram (inline) --------
-function HistogramInline({ data }: { data: HistogramData }) {
-  const edges = data?.edges || [];
-  const counts = data?.counts || [];
-  const label = data?.label ?? "pct_drv (%)";
-  const nuclei = data?.nuclei ?? [];
+export type AssetsIdentityProps = {
+  base: string; // e.g. "BTC"
+  quote: string; // e.g. "ETH"
+  wallets?: Record<string, number>; // optional: { BTC: 0.42, ETH: 1.1, USDT: 25.5 }
+  autoRefreshMs?: number; // optional polling
+  className?: string;
+};
 
-  if (edges.length < 2 || counts.length < 1) {
-    return (
-      <div className="rounded-xl border border-zinc-700/40 bg-zinc-900/70 p-2">
-        <div className="text-xs text-zinc-400">Histogram</div>
-        <div className="text-xs text-zinc-500">—</div>
-      </div>
-    );
-  }
+export default function AssetsIdentity({
+  base,
+  quote,
+  wallets,
+  autoRefreshMs = 0,
+  className = "",
+}: AssetsIdentityProps) {
+  const B = String(base).toUpperCase();
+  const Q = String(quote).toUpperCase();
+  const U = "USDT";
 
-  const vbW = 420, vbH = 140, pad = 28;
-  const bins = counts.length;
-  const xMin = edges[0], xMax = edges[edges.length - 1];
-  const yMax = Math.max(...counts, 1);
-  const xScale = (v: number) => pad + ((v - xMin) / Math.max(1e-12, xMax - xMin)) * (vbW - pad * 2);
-  const yScale = (c: number) => (vbH - pad) - (c / yMax) * (vbH - pad * 2);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [tstamp, setTstamp] = useState<number | null>(null);
 
-  // x ticks (5)
-  const ticks = 5;
-  const tickVals = Array.from({ length: ticks + 1 }, (_, k) => xMin + (k * (xMax - xMin)) / ticks);
+  const [benchAB, setBenchAB] = useState<number | null>(null);
+  const [idAB, setIdAB] = useState<number | null>(null);
+  const [pctAB, setPctAB] = useState<number | null>(null);
+
+  const [benchAU, setBenchAU] = useState<number | null>(null);
+  const [idAU, setIdAU] = useState<number | null>(null);
+
+  const [benchQU, setBenchQU] = useState<number | null>(null);
+  const [idQU, setIdQU] = useState<number | null>(null);
+
+  const [hist, setHist] = useState<number[]>([]);
+  const abortRef = useRef<AbortController | null>(null);
+
+  const fmt = {
+    bench: (v: number | null) =>
+      v == null || !Number.isFinite(v) ? "—" : Number(v).toFixed(4),
+    id: (v: number | null) =>
+      v == null || !Number.isFinite(v) ? "—" : Number(v).toFixed(6),
+    pct: (v: number | null) =>
+      v == null || !Number.isFinite(v) ? "—" : `${Number(v).toFixed(4)}%`,
+    bal: (v?: number) =>
+      v == null || !Number.isFinite(v) ? "—" : Number(v).toFixed(3),
+  };
+
+  const fetchAll = useCallback(async () => {
+    abortRef.current?.abort();
+    const ac = new AbortController();
+    abortRef.current = ac;
+    setLoading(true);
+    setErr(null);
+    try {
+      // 1) matrices/latest for B,Q,USDT
+      const u1 = new URL("/api/matrices/latest", window.location.origin);
+      u1.searchParams.set("coins", [B, Q, U].join(","));
+      u1.searchParams.set("t", String(Date.now()));
+      const r1 = await fetch(u1, { cache: "no-store", signal: ac.signal });
+      if (!r1.ok) throw new Error(`latest HTTP ${r1.status}`);
+      const j1 = (await r1.json()) as MatricesResp;
+
+      const coins = (j1?.coins || []).map((s) => String(s).toUpperCase());
+      const iB = coins.indexOf(B);
+      const iQ = coins.indexOf(Q);
+      const iU = coins.indexOf(U);
+
+      const M = (g?: Grid) => (Array.isArray(g) ? g : undefined);
+      const bench = M(j1?.matrices?.benchmark);
+      const id = M(j1?.matrices?.id_pct);
+      const pct = M(j1?.matrices?.pct24h);
+
+      const pick = (g: Grid | undefined, i: number, j: number): number | null =>
+        g && Number.isFinite(Number(g?.[i]?.[j])) ? Number(g[i][j]) : null;
+
+      // A/B
+      setBenchAB(iB >= 0 && iQ >= 0 ? pick(bench, iB, iQ) : null);
+      setIdAB(iB >= 0 && iQ >= 0 ? pick(id, iB, iQ) : null);
+      setPctAB(iB >= 0 && iQ >= 0 ? pick(pct, iB, iQ) : null);
+
+      // A/USDT and Q/USDT
+      setBenchAU(iB >= 0 && iU >= 0 ? pick(bench, iB, iU) : B === U ? 1 : null);
+      setIdAU(iB >= 0 && iU >= 0 ? pick(id, iB, iU) : B === U ? 0 : null);
+
+      setBenchQU(iQ >= 0 && iU >= 0 ? pick(bench, iQ, iU) : Q === U ? 1 : null);
+      setIdQU(iQ >= 0 && iU >= 0 ? pick(id, iQ, iU) : Q === U ? 0 : null);
+
+      // 2) str-aux/bins for histogram (A/B)
+      const sym = `${B}${Q}`;
+      const u2 = new URL("/api/str-aux/bins", window.location.origin);
+      u2.searchParams.set("pairs", sym);
+      u2.searchParams.set("window", "30m");
+      u2.searchParams.set("bins", "128");
+      u2.searchParams.set("sessionId", "dyn");
+      u2.searchParams.set("t", String(Date.now()));
+      const r2 = await fetch(u2, { cache: "no-store", signal: ac.signal });
+      if (r2.ok) {
+        const j2 = (await r2.json()) as StrBinsResp;
+        const o = j2?.out?.[sym];
+        const counts = (o?.hist?.counts ?? []) as number[];
+        if (Array.isArray(counts)) setHist(counts);
+        setTstamp(Number(o?.lastUpdateTs ?? j2?.ts ?? Date.now()) || Date.now());
+      } else {
+        setHist([]);
+        setTstamp(Date.now());
+      }
+    } catch (e: any) {
+      if (e?.name !== "AbortError") {
+        setErr(String(e?.message || e));
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, [B, Q]);
+
+  useEffect(() => {
+    fetchAll();
+    return () => abortRef.current?.abort();
+  }, [fetchAll]);
+
+  useEffect(() => {
+    if (!autoRefreshMs || autoRefreshMs < 5_000) return;
+    const id = setInterval(fetchAll, autoRefreshMs);
+    return () => clearInterval(id);
+  }, [autoRefreshMs, fetchAll]);
+
+  const since = useMemo(() => {
+    if (!tstamp) return "—";
+    const sec = Math.max(0, Math.round((Date.now() - tstamp) / 1000));
+    return `${sec}s`;
+  }, [tstamp]);
 
   return (
-    <div className="rounded-xl border border-zinc-700/40 bg-zinc-900/70 p-2">
-      <div className="flex items-center justify-between mb-1">
-        <div className="text-xs text-zinc-300">Histogram</div>
-        <div className="text-[11px] text-zinc-400">{label}</div>
+    <div
+      className={[
+        "rounded-2xl border border-slate-800 bg-slate-900/60 backdrop-blur-sm shadow-lg p-4",
+        className,
+      ].join(" ")}
+    >
+      {/* Header */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <PairChip base={B} quote={Q} />
+          <ValueChip label="benchm" value={fmt.bench(benchAB)} tone="neutral" />
+          <ValueChip label="id_pct" value={fmt.id(idAB)} tone={toneFromNumber(idAB)} />
+          <ValueChip label="pct24h" value={fmt.pct(pctAB)} tone={toneFromNumber(pctAB)} />
+        </div>
+        <div className="flex items-center gap-2 text-[11px] text-slate-400">
+          <span>updated {since} ago</span>
+          <button
+            className="rounded-md border border-slate-700 px-2 py-1 text-slate-200 hover:bg-slate-800/60"
+            onClick={fetchAll}
+          >
+            Refresh
+          </button>
+        </div>
       </div>
-      <svg viewBox={`0 0 ${vbW} ${vbH}`} className="w-full h-[160px] block">
-        {/* axes */}
-        <line x1={pad} y1={vbH - pad} x2={vbW - pad} y2={vbH - pad} stroke="rgb(110 110 120)" strokeWidth="1" />
-        <line x1={pad} y1={pad}       x2={pad}        y2={vbH - pad}  stroke="rgb(110 110 120)" strokeWidth="1" />
-        {/* x ticks */}
-        {tickVals.map((t, i) => (
-          <g key={`t${i}`}>
-            <line x1={xScale(t)} y1={vbH - pad} x2={xScale(t)} y2={vbH - pad + 4} stroke="rgb(110 110 120)" strokeWidth="1" />
-            <text x={xScale(t)} y={vbH - pad + 14} fontSize="10" textAnchor="middle" fill="rgb(180 180 190)">
-              {Number.isFinite(t) ? t.toFixed(4) : ""}
-            </text>
-          </g>
-        ))}
-        {/* bars */}
-        {counts.map((c, bi) => {
-          const x0 = xScale(edges[bi]);
-          const x1 = xScale(edges[bi + 1]);
-          const w = Math.max(1, x1 - x0 - 1);
-          const y = yScale(c);
-          const h = (vbH - pad) - y;
-          return (
-            <rect
-              key={`b${bi}`}
-              x={x0 + 0.5}
-              y={y}
-              width={w}
-              height={h}
-              fill="rgba(16,185,129,0.35)"      // emerald-500/35
-              stroke="rgba(16,185,129,0.45)"    // emerald-500/45
-              strokeWidth="0.5"
-              rx="2"
+
+      {/* Body */}
+      <div className="mt-3 grid grid-cols-12 gap-4">
+        {/* Bridges */}
+        <div className="col-span-12 lg:col-span-5 rounded-xl border border-slate-800 bg-slate-950/30 p-3">
+          <h4 className="mb-2 text-xs font-semibold text-slate-300">USDT Bridges</h4>
+          <div className="grid grid-cols-2 gap-3">
+            <BridgeCard coin={B} bench={benchAU} id={idAU} />
+            <BridgeCard coin={Q} bench={benchQU} id={idQU} />
+          </div>
+
+          {/* C1↔C2 quick refs */}
+          <div className="mt-3 grid grid-cols-2 gap-3">
+            <QuickRef
+              title={`${B} → ${Q}`}
+              bench={benchAB}
+              id={idAB}
             />
-          );
-        })}
-        {/* nuclei markers (optional) */}
-        {nuclei.map((nv, i) => (
-          <g key={`n${i}`}>
-            <line x1={xScale(nv)} y1={pad} x2={xScale(nv)} y2={vbH - pad} stroke="rgba(99,102,241,0.45)" strokeDasharray="3,3" />
-          </g>
-        ))}
-      </svg>
+            <QuickRef
+              title={`${Q} → ${B}`}
+              bench={invertSafe(benchAB)}
+              id={invertIdPct(idAB)}
+            />
+          </div>
+        </div>
+
+        {/* Wallets */}
+        <div className="col-span-12 lg:col-span-3 rounded-xl border border-slate-800 bg-slate-950/30 p-3">
+          <h4 className="mb-2 text-xs font-semibold text-slate-300">Wallet</h4>
+          <div className="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-1 gap-2">
+            <WalletCard coin={B} balance={wallets?.[B]} />
+            <WalletCard coin={Q} balance={wallets?.[Q]} />
+            <WalletCard coin={U} balance={wallets?.[U]} />
+          </div>
+          {err && (
+            <div className="mt-2 text-[11px] text-rose-300">Error: {err}</div>
+          )}
+        </div>
+
+        {/* Histogram */}
+        <div className="col-span-12 lg:col-span-4 rounded-xl border border-slate-800 bg-slate-950/30 p-3">
+          <h4 className="mb-2 text-xs font-semibold text-slate-300">
+            Histogram (IDHR bins · {B}/{Q})
+          </h4>
+          <Histogram counts={hist} />
+          <div className="mt-2 text-[10px] text-slate-500">
+            Bars derived from <code>/api/str-aux/bins</code> (window 30m · bins 128).
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
 
-// -------- Main component: AssetsIdentity --------
-export default function AssetsIdentity(props: AssetsIdentityProps) {
-  const {
-    base, quote, bridge = "USDT", coins, matrices, wallets, pct24h, histogram, className = "",
-  } = props;
+/* ────────────────────────── Small UI bits ────────────────────────── */
 
-  const idx = useMemo(() => ({
-    i: coins.indexOf(base.toUpperCase()),
-    j: coins.indexOf(quote.toUpperCase()),
-    u: coins.indexOf(bridge.toUpperCase()),
-  }), [coins, base, quote, bridge]);
+function PairChip({ base, quote }: { base: string; quote: string }) {
+  return (
+    <span className="inline-flex items-center gap-2 rounded-xl border border-emerald-800/40 bg-emerald-950/30 px-2.5 py-1 text-xs text-emerald-200 ring-1 ring-emerald-900/40">
+      <span className="font-semibold">{base}</span>
+      <span className="opacity-70">/</span>
+      <span className="font-semibold">{quote}</span>
+    </span>
+  );
+}
 
-  const safe = (g?: NumGrid, a?: number, b?: number) =>
-    a != null && b != null && a >= 0 && b >= 0 ? Number(g?.[a]?.[b]) : NaN;
+function ValueChip({
+  label,
+  value,
+  tone = "neutral",
+}: {
+  label: string;
+  value: string;
+  tone?: "neutral" | "pos" | "neg" | "amber";
+}) {
+  const map = {
+    neutral: "border-slate-700/60 bg-slate-900/60 text-slate-200",
+    pos: "border-emerald-700/60 bg-emerald-950/30 text-emerald-200 ring-1 ring-emerald-800/40",
+    neg: "border-rose-700/60 bg-rose-950/30 text-rose-200 ring-1 ring-rose-800/40",
+    amber: "border-amber-700/60 bg-amber-950/30 text-amber-200 ring-1 ring-amber-800/40",
+  } as const;
+  return (
+    <span
+      className={[
+        "inline-flex items-center gap-1 rounded-xl border px-2.5 py-1 text-xs",
+        map[tone],
+      ].join(" ")}
+    >
+      <span className="opacity-70">{label}</span>
+      <span className="font-mono tabular-nums">{value}</span>
+    </span>
+  );
+}
 
-  // Pair chips (benchm/id/pct24h)
-  const benchm    = safe(matrices.benchmark, idx.i, idx.j);
-  const idpq      = safe(matrices.id_pct,    idx.i, idx.j);
+function toneFromNumber(v: number | null): "neutral" | "pos" | "neg" | "amber" {
+  if (v == null || !Number.isFinite(v)) return "neutral";
+  if (v === 0) return "amber";
+  return v > 0 ? "pos" : "neg";
+}
 
-  // pct24h is pairwise from matrices.latest (units = %). It is NOT per-coin.
-  // If the matrix isn’t populated, we fallback to coin→USDT map to derive pair pct.
-  const pctPairDec = (() => {
-    const m = safe(matrices.pct24h, idx.i, idx.j);
-    if (Number.isFinite(m)) return Number(m) / 100; // convert % → decimal
-    const a = pct24h?.[base.toUpperCase()];
-    const b = pct24h?.[quote.toUpperCase()];
-    return Number.isFinite(a) && Number.isFinite(b) ? (1 + (a as number)) / (1 + (b as number)) - 1 : NaN;
-  })();
+function BridgeCard({ coin, bench, id }: { coin: string; bench: number | null; id: number | null }) {
+  return (
+    <div className="rounded-lg border border-slate-800 bg-slate-900/50 p-3">
+      <div className="text-xs text-slate-400 mb-1">{coin} → USDT</div>
+      <div className="flex items-center gap-3">
+        <BadgeKV k="benchm" v={bench} fmt="bench" />
+        <BadgeKV k="id_pct" v={id} fmt="id" />
+      </div>
+    </div>
+  );
+}
 
-  // Bridge mini-row values
-  const benchm_bu = safe(matrices.benchmark, idx.i, idx.u);
-  const id_bu     = safe(matrices.id_pct,    idx.i, idx.u);
-  const benchm_qu = safe(matrices.benchmark, idx.j, idx.u);
-  const id_qu     = safe(matrices.id_pct,    idx.j, idx.u);
+function QuickRef({ title, bench, id }: { title: string; bench: number | null; id: number | null }) {
+  return (
+    <div className="rounded-lg border border-slate-800 bg-slate-900/50 p-3">
+      <div className="text-xs text-slate-400 mb-1">{title}</div>
+      <div className="flex items-center gap-3">
+        <BadgeKV k="benchm" v={bench} fmt="bench" />
+        <BadgeKV k="id_pct" v={id} fmt="id" />
+      </div>
+    </div>
+  );
+}
 
-  // Wallet quick view
-  const wBase   = fmt3(wallets?.[base]   ?? 0);
-  const wQuote  = fmt3(wallets?.[quote]  ?? 0);
-  const wBridge = fmt3(wallets?.[bridge] ?? 0);
+function invertSafe(v: number | null) {
+  if (v == null || !Number.isFinite(v) || v === 0) return null;
+  return 1 / v;
+}
+function invertIdPct(v: number | null) {
+  // For small id_pct, the approximate inverse delta is ~ -id_pct, keep simple:
+  if (v == null || !Number.isFinite(v)) return null;
+  return -v;
+}
 
-  // Histogram: use provided or build from id_pct row (base → *)
-  const histData: HistogramData | null = useMemo(() => {
-    if (histogram?.edges?.length && histogram?.counts?.length) return histogram;
-    const row = (idx.i >= 0 ? matrices.id_pct?.[idx.i] ?? [] : []);
-    const vals = row.filter((v) => Number.isFinite(v)).map(Number);
-    if (!vals.length) return null;
+function BadgeKV({
+  k,
+  v,
+  fmt: which,
+}: {
+  k: string;
+  v: number | null;
+  fmt: "bench" | "id" | "pct";
+}) {
+  const format =
+    which === "bench" ? (x: number | null) => (x == null ? "—" : x.toFixed(4)) :
+    which === "id"    ? (x: number | null) => (x == null ? "—" : x.toFixed(6)) :
+                        (x: number | null) => (x == null ? "—" : `${x.toFixed(4)}%`);
 
-    const min = Math.min(...vals), max = Math.max(...vals);
-    if (!Number.isFinite(min) || !Number.isFinite(max) || min === max) {
-      // degenerate case: single value → make a tiny symmetric window
-      const c = vals[0] ?? 0;
-      const eps = Math.max(Math.abs(c) * 0.01, 1e-6);
-      const edges = [c - eps, c + eps];
-      return { edges, counts: [vals.length], label: "id_pct (dec)" };
-    }
-
-    const bins = 16;
-    const edges = Array.from({ length: bins + 1 }, (_, k) => min + ((max - min) * k) / bins);
-    const counts = Array.from({ length: bins }, () => 0);
-    vals.forEach((v) => {
-      let b = Math.floor(((v - min) / Math.max(1e-12, max - min)) * bins);
-      if (b < 0) b = 0; if (b >= bins) b = bins - 1;
-      counts[b]++;
-    });
-    return { edges, counts, label: "id_pct (dec)" };
-  }, [histogram, matrices.id_pct, idx.i]);
+  const tone = toneFromNumber(v);
+  const chip =
+    tone === "pos"
+      ? "border-emerald-700/60 bg-emerald-950/30 text-emerald-200 ring-1 ring-emerald-800/40"
+      : tone === "neg"
+      ? "border-rose-700/60 bg-rose-950/30 text-rose-200 ring-1 ring-rose-800/40"
+      : tone === "amber"
+      ? "border-amber-700/60 bg-amber-950/30 text-amber-200 ring-1 ring-amber-800/40"
+      : "border-slate-700/60 bg-slate-900/60 text-slate-200";
 
   return (
-    <div className={`rounded-xl border border-zinc-700/40 bg-zinc-900/60 p-3 ${className}`}>
-      {/* Header chips */}
-      <div className="flex items-center justify-between mb-2">
-        <div className="text-sm font-medium text-zinc-100">{base}/{quote}</div>
-        <div className="flex items-center gap-2">
-          <span className="px-2 py-0.5 rounded-md text-[11px] font-mono border border-zinc-600/40 bg-zinc-800/60 text-zinc-200">
-            benchm {fmt4(benchm)}
-          </span>
-          <span className="px-2 py-0.5 rounded-md text-[11px] font-mono border border-zinc-600/40 bg-zinc-800/60 text-zinc-200">
-            id {fmt6(idpq)}
-          </span>
-          <span className="px-2 py-0.5 rounded-md text-[11px] font-mono border border-emerald-600/30 bg-emerald-600/10 text-emerald-200">
-            pct24h {fmtPct2(pctPairDec)}
-          </span>
-        </div>
-      </div>
+    <span className={["inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px]", chip].join(" ")}>
+      <span className="opacity-70">{k}</span>
+      <span className="font-mono tabular-nums">{format(v)}</span>
+    </span>
+  );
+}
 
-      {/* Bridge mini-row */}
-      <div className="grid grid-cols-2 gap-2 mb-2">
-        <div className="rounded-lg bg-zinc-900/70 border border-zinc-700/40 p-2">
-          <div className="text-[11px] text-zinc-400">{base}→{bridge} · benchm / id</div>
-          <div className="font-mono text-[13px]">
-            {fmt4(benchm_bu)} <span className="text-zinc-500">/</span> {fmt6(id_bu)}
-          </div>
-        </div>
-        <div className="rounded-lg bg-zinc-900/70 border border-zinc-700/40 p-2">
-          <div className="text-[11px] text-zinc-400">{quote}→{bridge} · benchm / id</div>
-          <div className="font-mono text-[13px]">
-            {fmt4(benchm_qu)} <span className="text-zinc-500">/</span> {fmt6(id_qu)}
-          </div>
-        </div>
+function WalletCard({ coin, balance }: { coin: string; balance?: number }) {
+  const has = Number.isFinite(Number(balance)) && Number(balance) !== 0;
+  return (
+    <div
+      className={[
+        "rounded-md border px-3 py-2",
+        has
+          ? "border-emerald-800/50 bg-emerald-950/20 text-emerald-200"
+          : "border-slate-800 bg-slate-900/50 text-slate-300",
+      ].join(" ")}
+      title={has ? `${coin} • ${Number(balance).toFixed(6)}` : "no balance"}
+    >
+      <div className="text-[11px] text-slate-400">{coin}</div>
+      <div className="font-mono tabular-nums text-sm">
+        {Number.isFinite(Number(balance)) ? Number(balance).toFixed(6) : "—"}
       </div>
+    </div>
+  );
+}
 
-      {/* Wallet */}
-      <div className="rounded-xl border border-zinc-700/40 bg-zinc-900/70 p-2 mb-2">
-        <div className="text-xs text-zinc-300 mb-1">Wallet</div>
-        <div className="grid grid-cols-3 gap-2">
-          <div className="rounded-lg bg-zinc-900/80 border border-zinc-700/40 p-2">
-            <div className="text-[11px] text-zinc-400">{base}</div>
-            <div className="font-mono text-[13px]">{wBase}</div>
-          </div>
-          <div className="rounded-lg bg-zinc-900/80 border border-zinc-700/40 p-2">
-            <div className="text-[11px] text-zinc-400">{quote}</div>
-            <div className="font-mono text-[13px]">{wQuote}</div>
-          </div>
-          <div className="rounded-lg bg-zinc-900/80 border border-zinc-700/40 p-2">
-            <div className="text-[11px] text-zinc-400">{bridge}</div>
-            <div className="font-mono text-[13px]">{wBridge}</div>
-          </div>
-        </div>
+/* ─────────────────────────── Tiny Histogram ─────────────────────────── */
+
+function Histogram({ counts }: { counts: number[] }) {
+  const W = 320;
+  const H = 72;
+  const pad = 6;
+
+  const data = Array.isArray(counts) ? counts.filter((n) => Number.isFinite(Number(n))).map(Number) : [];
+  const n = data.length;
+  const max = data.reduce((m, v) => (v > m ? v : m), 0);
+
+  if (!n || max <= 0) {
+    return (
+      <div className="h-[88px] rounded-md border border-slate-800 bg-slate-900/50 flex items-center justify-center text-slate-500 text-sm">
+        No histogram data.
       </div>
+    );
+  }
 
-      {/* Histogram */}
-      {histData ? <HistogramInline data={histData} /> : (
-        <div className="rounded-xl border border-zinc-700/40 bg-zinc-900/70 p-2">
-          <div className="text-xs text-zinc-300">Histogram</div>
-          <div className="text-xs text-zinc-500">—</div>
-        </div>
-      )}
+  const bw = (W - pad * 2) / n;
+  const scaleY = (v: number) => Math.round((H - pad * 2) * (v / max));
+
+  return (
+    <div className="overflow-hidden">
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-[88px] rounded-md border border-slate-800 bg-slate-900/50">
+        {data.map((v, i) => {
+          const h = scaleY(v);
+          const x = pad + i * bw;
+          const y = H - pad - h;
+          return (
+            <rect
+              key={i}
+              x={x}
+              y={y}
+              width={Math.max(1, bw - 1)}
+              height={Math.max(1, h)}
+              rx={2}
+              className="fill-emerald-600/60"
+            />
+          );
+        })}
+      </svg>
     </div>
   );
 }
