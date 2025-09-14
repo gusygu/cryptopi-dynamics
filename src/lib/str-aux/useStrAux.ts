@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { subscribe } from "@/lib/pollerClient";
 
 // Minimal shape — extend safely if your API returns more
 export type StrAuxData = {
@@ -50,6 +51,7 @@ export function useStrAux({ pair, auto = true, refreshMs }: UseStrAuxOpts) {
       return 20000;
     }
   }, []);
+  // Centralized cadence: follow universal poller ticks; refreshMs is ignored when poller is present
   const cadence = refreshMs ?? defaultMs;
 
   const run = async () => {
@@ -69,14 +71,13 @@ export function useStrAux({ pair, auto = true, refreshMs }: UseStrAuxOpts) {
 
   useEffect(() => {
     run();
-    if (auto) {
-      tick.current = window.setInterval(run, cadence) as unknown as number;
-      return () => {
-        if (tick.current) window.clearInterval(tick.current);
-      };
-    }
+    if (!auto) return;
+    const unsub = subscribe((ev) => {
+      if (ev.type === "tick40" || ev.type === "tick120" || ev.type === "refresh") run();
+    });
+    return () => { unsub(); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pair, auto, cadence]);
+  }, [pair, auto]);
 
   return { data, error, loading, refresh: run };
 }

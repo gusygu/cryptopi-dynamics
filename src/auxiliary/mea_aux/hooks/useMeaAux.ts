@@ -1,5 +1,6 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { subscribe } from "@/lib/pollerClient";
 
 export type MeaGrid = Record<string, Record<string, number | null>>;
 export type MeaResp = {
@@ -33,8 +34,6 @@ export function useMeaAux(opts: UseMeaAuxOpts = {}) {
   const [errorObj, setErrorObj] = useState<Error | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
 
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const started = useRef<boolean>(false);
 
   const qs = useMemo(() => {
@@ -70,34 +69,21 @@ export function useMeaAux(opts: UseMeaAuxOpts = {}) {
     }
   }, [qs]);
 
-  const start = useCallback(() => {
-    if (started.current) return;
-    started.current = true;
-    const ms = opts.refreshMs && opts.refreshMs > 0 ? opts.refreshMs : 0;
-    if (ms > 0) {
-      // first call after a full interval, not immediately
-      timeoutRef.current = setTimeout(() => {
-        fetchNow();
-        intervalRef.current = setInterval(fetchNow, ms);
-      }, ms);
-    }
-  }, [fetchNow, opts.refreshMs]);
-
-  const stop = useCallback(() => {
-    if (timeoutRef.current) {
-      clearTimeout(timeoutRef.current);
-      timeoutRef.current = null;
-    }
-    if (intervalRef.current) {
-      clearInterval(intervalRef.current);
-      intervalRef.current = null;
-    }
-    started.current = false;
-  }, []);
+  const start = useCallback(() => { started.current = true; }, []);
+  const stop = useCallback(() => { started.current = false; }, []);
 
   useEffect(() => {
     return () => stop();
   }, [stop]);
+
+  // Centralized refresh: follow universal poller
+  useEffect(() => {
+    fetchNow();
+    const unsub = subscribe((ev) => {
+      if (ev.type === "tick40" || ev.type === "tick120" || ev.type === "refresh") fetchNow();
+    });
+    return () => { unsub(); };
+  }, [fetchNow]);
 
   return {
     coins, setCoins,

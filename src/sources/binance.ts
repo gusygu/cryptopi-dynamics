@@ -160,8 +160,28 @@ export async function fetchBookTicker(symbol: string) {
   return { bidPrice, askPrice, mid };
 }
 
+// ---- convenience points (compat with str-aux) --------------------------------
+export type MarketPoint = { ts: number; price: number; volume: number };
+
+export async function fetchOrderBookPoint(symbol: string, limit: 5|10|20|50|100|500|1000 = 100): Promise<MarketPoint> {
+  const { ts, mid, bidVol, askVol } = await fetchOrderBook(symbol, limit);
+  const vol = (Number(bidVol)||0) + (Number(askVol)||0);
+  return { ts, price: Number(mid), volume: Number(vol) };
+}
+
+export async function fetchKlinesPoints(symbol: string, interval: Interval, limit=128): Promise<MarketPoint[]> {
+  const kl = await fetchKlines(symbol, interval, limit);
+  return (kl ?? []).map(k => ({ ts: Number(k[0]), price: Number(k[4]), volume: Number(k[5]) }));
+}
+
+export async function fetchKlinesPointsForCoin(coin: string, interval: Interval, limit=128): Promise<MarketPoint[]> {
+  const sym = `${String(coin||"").toUpperCase()}USDT`;
+  return fetchKlinesPoints(sym, interval, limit);
+}
+
 export default {
   fetch24hAll, mapTickerBySymbol, fetchTickersForCoins, getSettingsCoins, usdtSymbolsFor,
   fetchKlines, fetchOrderBook, fetchOrderBooksForSymbols, fetchBookTicker,
   fetchTicker24h, fetchTicker24hNum,
+  fetchOrderBookPoint, fetchKlinesPoints, fetchKlinesPointsForCoin,
 };

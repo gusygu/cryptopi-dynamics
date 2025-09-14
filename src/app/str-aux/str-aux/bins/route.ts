@@ -15,7 +15,7 @@ import { upsertSession } from '@/lib/str-aux/sessionDb';
 import {
   fetchOrderBookPoint,
   fetchKlinesPoints,
-  fetchTicker24h,
+  fetchTicker24hNum,
 } from '@/sources/binance';
 
 // ---------------------------------------------------------------------------
@@ -122,8 +122,8 @@ export async function GET(req: Request) {
       const base = symbol.replace(/USDT$/i, '');
       try {
         // (1) snapshot: last price + 24h for labels / quick UI
-        const t24 = await fetchTicker24h(symbol); // -> { price, pct24h }
-        const lastPriceFromTicker = Number(t24?.price ?? NaN);
+        const t24 = await fetchTicker24hNum(symbol); // -> { last, pct24h }
+        const lastPriceFromTicker = Number(t24?.last ?? NaN);
         const pct24h = Number(t24?.pct24h ?? 0);
 
         // (2) points: orderbook mid (fresh) + klines (dense)

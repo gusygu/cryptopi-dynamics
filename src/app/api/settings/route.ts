@@ -17,8 +17,16 @@ export async function GET(req: NextRequest) {
   const settings = await getAll();
   // Poller config
   if (scope === "poller") {
-    const cycle40 = Number(process.env.NEXT_PUBLIC_POLL_40 ?? 40);
-    const cycle120 = Number(process.env.NEXT_PUBLIC_POLL_120 ?? 120);
+    const s = await getAll();
+    const baseMs = Math.max(5_000, Number(s?.timing?.autoRefreshMs ?? 40_000));
+    const c40 = Math.max(5, Math.round(baseMs / 1000));
+    const secCycles = Math.max(1, Math.min(10, Number(s?.timing?.secondaryCycles ?? 3)));
+    const c120 = Math.max(c40, c40 * secCycles);
+    // env overrides (optional) if explicitly set
+    const env40 = Number(process.env.NEXT_PUBLIC_POLL_40 ?? NaN);
+    const env120 = Number(process.env.NEXT_PUBLIC_POLL_120 ?? NaN);
+    const cycle40 = Number.isFinite(env40) ? env40 : c40;
+    const cycle120 = Number.isFinite(env120) ? env120 : c120;
     return NextResponse.json(
       { poll: { cycle40, cycle120 } },
       { headers: { "Cache-Control": "no-store" } }

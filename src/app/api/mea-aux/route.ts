@@ -47,9 +47,7 @@ function clampK(k: number | undefined, coinsN: number) {
   return Math.min(max, Math.max(1, v));
 }
 
-async function opt<T = any>(p: string): Promise<T | null> {
-  try { return (await import(/* @vite-ignore */ p)) as T; } catch { return null; }
-}
+// Avoid dynamic import with expression; prefer literal with try/catch.
 
 // quick counter of finite values in id_pct grid
 function countFinite(grid: IdPctGrid): number {
@@ -228,7 +226,8 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ ok: false, error: String(err?.message ?? err) }, { status: 500 });
     }
   }
-  const tiers = await opt<any>("@/auxiliary/mea_aux/tiers");
+  let tiers: any = null;
+  try { tiers = await import("@/auxiliary/mea_aux/tiers"); } catch {}
 
   // Optional tier label for a specific Ca/Cb
   let tierLabel: string | undefined;

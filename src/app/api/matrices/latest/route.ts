@@ -46,15 +46,8 @@ const prevPctByKey: Record<string, number[][]> = {};
 const prevBenchByKey: Record<string, number[][]> = {};
 const prevIdPctByKey: Record<string, number[][]> = {};
 
-async function opt<T = any>(path: string): Promise<T | null> {
-  try {
-    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-    // @ts-ignore
-    return (await import(/* @vite-ignore */ path)) as T;
-  } catch {
-    return null;
-  }
-}
+// Note: avoid dynamic import with variable path (breaks static analysis)
+// Use explicit try/catch around literal module IDs instead.
 
 function coinsFromQuery(q: string | null): string[] {
   return (q ?? "")
@@ -262,8 +255,10 @@ export async function GET(req: Request) {
 
   // --- derived matrices (id_pct & pct_drv) ---
   try {
-    const math = await opt<any>("@/core/math/matrices");
-    const db = await opt<any>("@/core/db");
+    let math: any = null;
+    let db: any = null;
+    try { math = await import("@/core/math/matrices"); } catch {}
+    try { db = await import("@/core/db"); } catch {}
     if (math?.buildDerived && db?.getPrevValue) {
       const getPrev = async (mt: "benchmark" | "id_pct", base: string, quote: string, beforeTs: number) =>
         await db.getPrevValue(mt, base, quote, beforeTs);

@@ -1,7 +1,7 @@
 // src/app/api/health/route.ts
 import { NextResponse } from "next/server";
 import { getSettingsServer } from "@/lib/settings/server";
-import { fetchTickersForCoins, fetchOrderBooksForCoins } from "@/sources/binance";
+import { fetchTickersForCoins, fetchOrderBooksForSymbols } from "@/sources/binance";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -20,17 +20,18 @@ export async function GET(req: Request) {
 
   const [tickers, books] = await Promise.all([
     fetchTickersForCoins(coins),
-    fetchOrderBooksForCoins(coins, (isFinite(depth) && depth > 0 ? (depth as any) : 20)),
+    fetchOrderBooksForSymbols(coins.filter(c => c !== "USDT").map(c => `${c}USDT`), (isFinite(depth) && depth > 0 ? (depth as any) : 20)),
   ]);
 
   const sampleCoin = coins.includes(pick) && pick !== "USDT"
     ? pick
     : (coins.find(c => c !== "USDT") ?? "BTC");
 
+  const echoSym = `${sampleCoin}USDT`;
   const echo = {
     coin: sampleCoin,
     ticker: tickers[sampleCoin] ?? null,
-    orderbook: books[sampleCoin] ?? null,
+    orderbook: books[echoSym] ?? null,
   };
 
   const body: any = {
@@ -52,3 +53,4 @@ export async function GET(req: Request) {
 
   return NextResponse.json(body, { headers: { "Cache-Control": "no-store" } });
 }
+

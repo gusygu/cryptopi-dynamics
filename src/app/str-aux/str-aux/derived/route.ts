@@ -12,7 +12,8 @@ export async function GET(req: NextRequest) {
   const ts_ms = Date.now();
 
   try {
-    const rows = await fetch24hAll();
+    const symbols = coins.filter(c => c !== 'USDT').map(c => `${c}USDT`);
+    const rows = await fetch24hAll(symbols);
     const tmap = mapTickerBySymbol(rows);
     const { benchmark } = buildPrimaryDirect(coins, tmap);
 

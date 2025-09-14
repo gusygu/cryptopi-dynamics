@@ -181,7 +181,7 @@ function SwapPill({ tag }: { tag: SwapTag }) {
 
   return (
     <span className={cx("ml-1 rounded-md px-1.5 py-0.5 font-mono text-[10px] tabular-nums", color)}>
-      {`${Math.max(0, Math.round(tag.count))} ${hhmm}`}
+      {`${String(Math.max(0, Math.round(tag.count))).padStart(2, "0")} ${hhmm}`}
     </span>
   );
 }
@@ -377,8 +377,8 @@ export default function ArbTable({
     setBootNeutral(false);
   }, [sig, bootNeutral]);
 
-  // top 5 candidates only
-  const topRows = useMemo(() => sorted.slice(0, 5), [sorted]);
+  // show all combinations in arb path (no top-5 cap)
+  const topRows = sorted;
 
   return (
     <div className={cx("rounded-2xl border border-slate-800 bg-slate-900/60 p-4", className)}>

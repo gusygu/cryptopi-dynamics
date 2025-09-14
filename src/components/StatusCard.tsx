@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
+import { subscribe } from "@/lib/pollerClient";
 
 type Status = {
   ok: boolean;
@@ -31,8 +32,10 @@ export default function StatusCard() {
 
   useEffect(() => {
     refresh();
-    const id = setInterval(refresh, 5000);
-    return () => clearInterval(id);
+    const unsub = subscribe((ev) => {
+      if (ev.type === "tick40" || ev.type === "tick120" || ev.type === "refresh") refresh();
+    });
+    return () => unsub();
   }, []);
 
   if (!s) return null;

@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
+import HomeBar from "@/components/HomeBar";
 import CoinSelector from "@/components/settings/CoinSelector";
 import ClusterManager, { Cluster } from "@/components/settings/ClusterManager";
 import { useSettings } from "@/lib/settings/provider";
@@ -221,6 +222,7 @@ export default function SettingsPage() {
 
   return (
     <div className="min-h-dvh bg-slate-950 text-slate-100">
+      <HomeBar className="sticky top-0 z-30 border-b border-slate-800/60 bg-slate-950/80 backdrop-blur" />
       <div className="mx-auto max-w-6xl p-4 lg:p-6 space-y-6">
         {/* Header */}
         <header className="flex items-end justify-between">

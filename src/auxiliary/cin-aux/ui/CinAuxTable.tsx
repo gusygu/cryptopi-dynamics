@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { subscribe } from '@/lib/pollerClient';
 
 type Row = {
   symbol: string;
@@ -65,9 +66,10 @@ export default function CinAuxTable({
   useEffect(() => {
     const ac = new AbortController();
     fetchOnce(ac.signal);
-    if (timer.current) clearInterval(timer.current);
-    timer.current = setInterval(() => fetchOnce(ac.signal), Math.max(10_000, autoRefreshMs));
-    return () => { ac.abort(); if (timer.current) clearInterval(timer.current); };
+    const unsub = subscribe((ev) => {
+      if (ev.type === 'tick40' || ev.type === 'tick120' || ev.type === 'refresh') fetchOnce(ac.signal);
+    });
+    return () => { ac.abort(); unsub(); };
   }, [coinsQS, autoRefreshMs]);
 
   return (

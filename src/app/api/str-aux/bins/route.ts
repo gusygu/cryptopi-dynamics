@@ -1,3 +1,4 @@
+// src/app/api/str-aux/bins/route.ts
 import { NextResponse } from "next/server";
 
 import type { WindowKey, MarketPoint, OpeningExact } from "@/str-aux/types";
@@ -122,7 +123,7 @@ function ensureOpening(points: MarketPoint[], fallbackPrice: number, tsNow: numb
   };
 }
 
-/* --------------------------- symbol split (NEW) ----------------------------- */
+/* --------------------------- symbol split (quotes) -------------------------- */
 
 const KNOWN_QUOTES = ["USDT","BTC","ETH","BNB","FDUSD","BUSD","TUSD","USDC","TRY"];
 function splitSymbol(s: string): { base: string; quote: string } {

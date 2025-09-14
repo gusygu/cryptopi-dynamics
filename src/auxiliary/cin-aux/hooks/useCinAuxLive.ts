@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { subscribe } from '@/lib/pollerClient';
 
 type Options = {
   appSessionId?: string;             // default 'dev-session'
@@ -37,7 +38,6 @@ export function useCinAuxLive(opts: Options) {
 
   useEffect(() => {
     let mounted = true;
-    let timer: any;
 
     async function fetchOnce() {
       try {
@@ -57,12 +57,10 @@ export function useCinAuxLive(opts: Options) {
     }
 
     fetchOnce();
-    timer = setInterval(fetchOnce, pollMs);
-
-    return () => {
-      mounted = false;
-      clearInterval(timer);
-    };
+    const unsub = subscribe((ev) => {
+      if (ev.type === 'tick40' || ev.type === 'tick120' || ev.type === 'refresh') fetchOnce();
+    });
+    return () => { mounted = false; unsub(); };
   }, [url, pollMs]);
 
   return { rows, loading, error, cycleTs: cycleTsRef.current };

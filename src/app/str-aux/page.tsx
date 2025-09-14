@@ -1,10 +1,12 @@
 'use client';
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import HomeBar from '@/components/HomeBar';
 import NavBar from '@/components/NavBar';
 import Histogram from '@/app/str-aux/Histogram';
 import CoinPanel from '@/app/str-aux/CoinPanel';
 import { useSettings } from '@/lib/settings/provider';
+import { subscribe, getState } from '@/lib/pollerClient';
 
 type WindowSel = '30m' | '1h' | '3h';
 type PairAvailability = { usdt: string[]; cross: string[]; all: string[] };
@@ -95,7 +97,7 @@ export default function StrAuxPage() {
   const { settings } = useSettings();
 
   // timing
-  const baseMs = Math.max(1000, Number(settings.timing?.autoRefreshMs ?? 40_000));
+  const [baseMs, setBaseMs] = useState<number>(() => Math.max(1000, getState().dur40 * 1000));
   const secondaryEnabled = !!settings.timing?.secondaryEnabled;
   const secondaryCycles = Math.max(1, Math.min(10, Number(settings.timing?.secondaryCycles ?? 3)));
 
@@ -211,25 +213,27 @@ export default function StrAuxPage() {
     }
   }, [pairs, windowSel, showUnverified, hideNoData]);
 
-  // poller
+  // poller-driven refresh (single clock across app)
   useEffect(() => {
     let cancelled = false;
     const ac = new AbortController();
-
     const run = async () => { if (!cancelled) await fetchOnce({ signal: ac.signal }); };
     run();
 
-    if (timer.current) clearInterval(timer.current);
-    if (auto) {
-      timer.current = setInterval(run, baseMs);
-      if (secondaryEnabled) {
-        let n = 0;
-        const sec = setInterval(() => { n++; if (n % secondaryCycles === 0) run(); }, baseMs);
-        return () => { clearInterval(sec); cancelled = true; ac.abort(); if (timer.current) clearInterval(timer.current); };
+    let cycle = 0;
+    const unsub = subscribe((ev) => {
+      if (ev.type === 'state') {
+        setBaseMs(Math.max(1000, ev.state.dur40 * 1000));
+      } else if ((ev.type === 'tick40' || ev.type === 'refresh') && auto) {
+        run();
+        if (secondaryEnabled) {
+          cycle = (cycle + 1) % Math.max(1, secondaryCycles);
+          if (cycle === 0) run();
+        }
       }
-    }
-    return () => { cancelled = true; ac.abort(); if (timer.current) clearInterval(timer.current); };
-  }, [fetchOnce, auto, baseMs, secondaryEnabled, secondaryCycles]);
+    });
+    return () => { cancelled = true; ac.abort(); unsub(); };
+  }, [fetchOnce, auto, secondaryEnabled, secondaryCycles]);
 
   // pagination — optionally hide no-data in the grid
   const symbolsAll = useMemo(() => (data?.symbols?.length ? data.symbols : pairs), [data?.symbols, pairs]);
@@ -259,6 +263,7 @@ export default function StrAuxPage() {
 
   return (
     <div className="min-h-dvh bg-slate-950 text-slate-100">
+      <HomeBar className="sticky top-0 z-30 border-b border-slate-800/60 bg-slate-950/80 backdrop-blur" />
       <NavBar />
       <div className="mx-auto max-w-[1600px] p-6 space-y-6">
         <header className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">

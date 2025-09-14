@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import ArbTable from "@/app/dynamics/ArbTable";
+import ArbTable from "@/components/ArbTable";
 import {
   useDomainVM,
   toArbTableInput,

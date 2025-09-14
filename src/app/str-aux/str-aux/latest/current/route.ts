@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { getCurrent, getDebug } from "@/lab/legacy/server/auxStore";
-import type { BucketKey } from "@/lab/legacy";
+// legacy auxStore removed; stub
+type BucketKey = "30m"|"1h"|"3h";
 
 export async function GET(req: Request) {
   try {
@@ -13,11 +13,10 @@ export async function GET(req: Request) {
 
     // optional: crude debug passthrough if someone calls `/api/auxi/current?debug=1`
     if (searchParams.get("debug")) {
-      return NextResponse.json(getDebug());
+      return NextResponse.json({ ok: false, error: "auxStore debug not available" }, { status: 501 });
     }
 
-    const out = getCurrent(appSessionId, base, quote, win);
-    return NextResponse.json(out);
+    return NextResponse.json({ ok: false, error: "auxStore current not available" }, { status: 501 });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: String(e?.message || e) }, { status: 500 });
   }

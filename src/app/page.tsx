@@ -1,65 +1,21 @@
-"use client";
-import "./globals.css";
-import { useCallback, useEffect, useRef, useState } from "react";
-import StatusCard from "@/components/StatusCard";
-import TimerBar from "@/components/TimeBar";
-import PollerBadge from "@/lab/legacy/PollerBadge";
-import { subscribe as subscribePoller, setFetching, setLastOkTs } from "@/lib/pollerClient";
-import Legend from "@/components/Legend";
-import Matrix from "@/components/Matrix";
-import MeaAuxCard from "@/auxiliary/mea_aux/ui/MeaAuxCard";
-import CinAuxTable from "@/auxiliary/cin-aux/ui/CinAuxTable";
+// Server landing page
+import Link from "next/link";
 
-// ... (types kept as-is)
-
-const APP_SESSION_ID = "dev-session";
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+export const metadata = { title: "CryptoPi \u0007 Home" };
 
 export default function Page() {
-  // ... (state + refs kept as-is)
-
-  // fetchMatricesLatest: (add) setLastOkTs when gateTs advances
-  // inside fetchMatricesLatest success block:
-  //   setData(j);
-  //   if (gateTs) setLastOkTs(gateTs);
-
-  useEffect(() => {
-    // initial fetch on mount + every 40s tick/refresh
-    const doAll = async () => {
-      setFetching(true);
-      await Promise.all([fetchStatus(), fetchMatricesLatest(), fetchCinLatest()]).catch(() => {});
-      setFetching(false);
-    };
-    doAll();
-
-    const unsub = subscribePoller((ev) => {
-      if (ev.type === "tick40" || ev.type === "refresh") {
-        doAll();
-      }
-    });
-    return () => { unsub(); };
-  }, []);
-
-  // ... (rest unchanged)
-
   return (
-    <div className="p-4 md:p-6">
-      <header className="mb-4 flex items-center gap-3">
-        <h1 className="text-xl font-semibold">Dynamics — Matrices</h1>
-        <button
-          className="ml-auto rounded-md bg-indigo-600/80 hover:bg-indigo-500 px-3 py-1.5 text-xs"
-          onClick={kickPipeline}
-          title="Trigger one writer pass (dev)"
-        >
-          Force build (dev)
-        </button>
-      </header>
-
-      <div className="flex items-center gap-3 mb-2"><PollerBadge /></div>
-      <StatusCard />
-      <TimerBar />
-      <Legend />
-
-      {/* ...rest of your page stays the same */}
-    </div>
+    <main className="min-h-dvh bg-slate-950 text-slate-100 p-8">
+      <h1 className="text-2xl font-semibold">CryptoPi Dynamics</h1>
+      <p className="mt-2 text-slate-400">Welcome. Explore live matrices and auxiliaries.</p>
+      <div className="mt-6 inline-flex gap-3">
+        <Link href="/dynamics" className="rounded-lg border border-slate-700/60 px-4 py-2 hover:bg-slate-800/60">Open Dynamics</Link>
+        <Link href="/matrices" className="rounded-lg border border-slate-700/60 px-4 py-2 hover:bg-slate-800/60">Matrices</Link>
+        <Link href="/settings" className="rounded-lg border border-slate-700/60 px-4 py-2 hover:bg-slate-800/60">Settings</Link>
+      </div>
+    </main>
   );
 }
+

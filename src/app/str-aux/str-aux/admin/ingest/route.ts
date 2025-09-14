@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { ingest } from "@/lab/legacy/server/auxStore";
-import type { BucketKey } from "@/lab/legacy";
+// legacy auxStore removed; return not implemented for now
+type BucketKey = "30m"|"1h"|"3h";
 
 export async function POST(req: Request) {
   try {
@@ -13,17 +13,7 @@ export async function POST(req: Request) {
       ? raw.window
       : "30m";
 
-    const ack = ingest({
-      appSessionId: String(raw?.appSessionId || raw?.session || "default"),
-      pair: { base, quote },
-      window: win,
-      opening: raw?.opening,        // may be partial; healed inside
-      latestTs: Number(raw?.latestTs),
-      points: Array.isArray(raw?.points) ? raw.points : [],
-      metrics: raw?.metrics,
-    });
-
-    return NextResponse.json(ack);
+    return NextResponse.json({ ok: false, error: "auxStore ingest not available" }, { status: 501 });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: String(e?.message || e) }, { status: 500 });
   }

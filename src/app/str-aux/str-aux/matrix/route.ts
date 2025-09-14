@@ -17,7 +17,8 @@ export async function GET(req: NextRequest) {
   const coins = coinsStr.split(',').map(s => s.trim()).filter(Boolean);
 
   try {
-    const rows = await fetch24hAll();
+    const symbols = coins.filter(c => c !== 'USDT').map(c => `${c}USDT`);
+    const rows = await fetch24hAll(symbols);
     const tmap = mapTickerBySymbol(rows);
     const base = buildPrimaryDirect(coins, tmap); // { benchmark, delta, pct24h }
 

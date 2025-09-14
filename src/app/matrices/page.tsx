@@ -3,9 +3,11 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import NavBar from "@/components/NavBar";
+import HomeBar from "@/components/HomeBar";
 import { useSettings } from "@/lib/settings/provider";
 import MeaAuxCard from "@/auxiliary/mea_aux/ui/MeaAuxCard";
 import CinAuxPanel from "@/auxiliary/cin-aux/ui/CinAuxTable";
+import { subscribe, getState, setEnabled } from "@/lib/pollerClient";
 
 /* ---------- Types ---------- */
 type TsKey = "benchmark" | "pct24h" | "delta" | "id_pct" | "pct_drv";
@@ -97,7 +99,7 @@ function ValuePill({
 export default function MatricesPage() {
   const { settings } = useSettings();
 
-  const baseMs = Math.max(1000, Number(settings.timing?.autoRefreshMs ?? 40_000));
+  const [baseMs, setBaseMs] = useState<number>(() => Math.max(1000, getState().dur40 * 1000));
   const secondaryEnabled = !!settings.timing?.secondaryEnabled;
   const secondaryCycles = Math.max(1, Math.min(10, Number(settings.timing?.secondaryCycles ?? 3)));
 
@@ -115,7 +117,7 @@ export default function MatricesPage() {
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  const [running, setRunning] = useState(true);
+  const [running, setRunning] = useState<boolean>(() => getState().enabled);
   const [lastFetchAt, setLastFetchAt] = useState<number | null>(null);
   const [lastDataTs, setLastDataTs] = useState<number | null>(null);
   const [tMinus, setTMinus] = useState<number>(baseMs);
@@ -171,24 +173,26 @@ export default function MatricesPage() {
     }
   }, [coinsForFetch, baseMs]);
 
+  // Subscribe to global poller for sync refresh + countdown
   useEffect(() => {
-    if (!running) return;
-    fetchLatest();
-    const id = setInterval(fetchLatest, baseMs);
-    return () => clearInterval(id);
-  }, [running, baseMs, fetchLatest]);
-
-  useEffect(() => {
-    if (!running || !secondaryEnabled) return;
-    let n = 0;
-    const id = setInterval(() => { n++; if (n % secondaryCycles === 0) fetchLatest(); }, baseMs);
-    return () => clearInterval(id);
-  }, [running, secondaryEnabled, secondaryCycles, baseMs, fetchLatest]);
-
-  useEffect(() => {
-    const id = setInterval(() => setTMinus((t) => (t > 1000 ? t - 1000 : 0)), 1000);
-    return () => clearInterval(id);
-  }, [baseMs]);
+    let cycle = 0;
+    const unsub = subscribe((ev) => {
+      if (ev.type === "state") {
+        setRunning(ev.state.enabled);
+        setBaseMs(Math.max(1000, ev.state.dur40 * 1000));
+        setTMinus(ev.state.remaining40 * 1000);
+      } else if (ev.type === "tick") {
+        setTMinus(ev.remaining40 * 1000);
+      } else if (ev.type === "tick40" || ev.type === "refresh") {
+        if (running) fetchLatest();
+        if (running && secondaryEnabled) {
+          cycle = (cycle + 1) % Math.max(1, secondaryCycles);
+          if (cycle === 0) fetchLatest();
+        }
+      }
+    });
+    return () => { unsub(); };
+  }, [fetchLatest, running, secondaryEnabled, secondaryCycles]);
 
   useEffect(() => {
     if (clusterIdx >= clusters.length) setClusterIdx(0);
@@ -218,6 +222,7 @@ export default function MatricesPage() {
 
   return (
     <div className="min-h-dvh bg-slate-950 text-slate-100">
+      <HomeBar className="sticky top-0 z-30 border-b border-slate-800/60 bg-slate-950/80 backdrop-blur" />
       <NavBar />
       <div className="mx-auto max-w-[1800px] p-4 lg:p-6 space-y-4">
         <header className="flex flex-wrap items-end justify-between gap-3">
@@ -234,7 +239,7 @@ export default function MatricesPage() {
             </p>
           </div>
           <div className="flex items-center gap-2">
-            <button onClick={() => setRunning(v=>!v)} className={`rounded-xl px-3 py-2 text-xs border ${running ? "border-rose-700/50 hover:bg-rose-900/30" : "border-emerald-700/50 hover:bg-emerald-900/30"}`}>{running ? "Stop" : "Start"} poller</button>
+            <button onClick={() => setEnabled(!running)} className={`rounded-xl px-3 py-2 text-xs border ${running ? "border-rose-700/50 hover:bg-rose-900/30" : "border-emerald-700/50 hover:bg-emerald-900/30"}`}>{running ? "Stop" : "Start"} poller</button>
             <button onClick={() => fetchLatest()} className="rounded-xl border border-slate-800 px-3 py-2 text-sm hover:bg-slate-800">Refresh</button>
           </div>
         </header>

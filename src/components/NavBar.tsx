@@ -6,9 +6,9 @@ import { usePathname } from "next/navigation";
 type Item = { href: string; label: string };
 
 const items: Item[] = [
-  { href: "/",          label: "Dashboard" },
-  { href: "/dynamics",  label: "Matrices"  },
-  { href: "/straux",    label: "Str-aux"   },
+  { href: "/dynamics",          label: "Dashboard" },
+  { href: "/",          label: "Matrices"  },
+  { href: "/str-aux",    label: "Str-aux"   },
   { href: "/settings",  label: "Settings"  },
   { href: "/intro",     label: "Intro"     }, // README-ish
 ];

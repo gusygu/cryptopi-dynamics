@@ -2,7 +2,8 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
-import { useCoinsUniverse, useMeaGrid, usePreviewSymbols } from "@/lib/dynamicsClient";
+import { subscribe } from "@/lib/pollerClient";
+import { useCoinsUniverse, useMatricesLatest, usePreviewSymbols, useMeaGrid } from "@/lib/dynamicsClient";
 import type { Coins, Grid } from "@/lib/dynamics.contracts";
 
 type Props = {
@@ -23,7 +24,6 @@ export default function DynamicsMatrix({
   base,
   quote,
   onSelect,
-  autoRefreshMs = 0,
   className = "",
   title = "Dynamics — MEA Matrix",
 }: Props) {
@@ -51,29 +51,70 @@ export default function DynamicsMatrix({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [base, quote, coins.join("|")]);
 
-  // MEA grid fetch
-  const { grid: raw, loading, error, refresh } = useMeaGrid(coins);
+  // Fetch flags (bridged mask) from matrices/latest; render values from MEA
+  const { data, loading: loadingMatrices, error: errorMatrices, refresh: refreshMatrices } = useMatricesLatest(coins);
+  const mats: any = data?.matrices ?? {};
+
+  const { grid: meaRaw, loading: loadingMea, error: errorMea, refresh: refreshMea } = useMeaGrid(coins);
   const grid: Grid | undefined = useMemo(() => {
-    if (!raw) return undefined;
-    const any: any = raw;
-    if (Array.isArray(any)) return any as Grid;
-    if (any && Array.isArray(any.weights)) return any.weights as Grid;
+    if (!meaRaw) return undefined;
+    const anyGrid: any = meaRaw as any;
+    if (Array.isArray(anyGrid)) return anyGrid as Grid;
+    if (anyGrid && Array.isArray(anyGrid.weights)) return anyGrid.weights as Grid;
+    if (anyGrid && typeof anyGrid === 'object') {
+      const n = coins.length;
+      const out: (number|null)[][] = Array.from({ length: n }, () => Array(n).fill(null));
+      const idx = Object.fromEntries(coins.map((c, i) => [String(c).toUpperCase(), i]));
+      for (const b of Object.keys(anyGrid)) {
+        const i = idx[String(b).toUpperCase()];
+        if (i == null) continue;
+        const row = anyGrid[b] || {};
+        for (const q of Object.keys(row)) {
+          const j = idx[String(q).toUpperCase()];
+          if (j == null) continue;
+          const v = row[q];
+          out[i][j] = v == null ? null : Number(v);
+        }
+      }
+      return out as Grid;
+    }
     return undefined;
-  }, [raw]);
+  }, [meaRaw, coins.join('|')]);
+
+  const loading = loadingMea || loadingMatrices;
+  const error = errorMea || errorMatrices;
+
+  // Bridged mask (USDT triangulation) from flags
+  const bridgedMask: boolean[][] | null = useMemo(() => {
+    const f: any = data?.flags ?? {};
+    const idp = f?.id_pct?.bridged as boolean[][] | undefined;
+    if (Array.isArray(idp)) return idp as any;
+    const pct = f?.pct24h?.bridged as boolean[][] | undefined;
+    if (Array.isArray(pct)) return pct as any;
+    return null;
+  }, [data]);
 
   // preview availability rings
-  const { symbols: previewSyms } = usePreviewSymbols();
-  const hasPreview = useMemo(() => {
+  const { symbols: previewSyms } = usePreviewSymbols(coins);
+  const hasPreviewExact = useMemo(() => {
     const s = new Set(previewSyms.map((x) => String(x || "").toUpperCase()));
     return (A: string, B: string) => s.has(`${A}${B}`.toUpperCase());
   }, [previewSyms]);
+  const hasPreviewAny = useMemo(() => {
+    const s = new Set(previewSyms.map((x) => String(x || "").toUpperCase()));
+    return (A: string, B: string) => s.has(`${A}${B}`.toUpperCase()) || s.has(`${B}${A}`.toUpperCase());
+  }, [previewSyms]);
 
-  // auto refresh
+  // central poller-driven refresh (no local timers)
   useEffect(() => {
-    if (!autoRefreshMs || autoRefreshMs < 5_000) return;
-    const id = setInterval(() => refresh(), autoRefreshMs);
-    return () => clearInterval(id);
-  }, [autoRefreshMs, refresh]);
+    const unsub = subscribe((ev) => {
+      if (ev.type === "tick40" || ev.type === "tick120" || ev.type === "refresh") {
+        refreshMea();
+        refreshMatrices();
+      }
+    });
+    return () => { unsub(); };
+  }, [refreshMea, refreshMatrices]);
 
   const clickCell = (b: string, q: string) => {
     if (b === q) return;
@@ -97,9 +138,9 @@ export default function DynamicsMatrix({
             </span>
           </span>
           <button
-            onClick={refresh}
+            onClick={() => { refreshMea(); refreshMatrices(); }}
             className="rounded-md border border-slate-700 px-2 py-1 text-slate-200 hover:bg-slate-800/60"
-            title="Refresh MEA"
+            title="Refresh"
           >
             Refresh
           </button>
@@ -136,14 +177,26 @@ export default function DynamicsMatrix({
                     const b = coins[i], q = coins[j];
                     const isDiag = i === j;
                     const isSel = sel.b === b && sel.q === q;
-                    const preview = !isDiag && hasPreview(b, q);
+                    const previewExact = !isDiag && hasPreviewExact(b, q);
+                    const previewAny = !isDiag && hasPreviewAny(b, q);
+                    const bridged = !!bridgedMask?.[i]?.[j];
+
+                    // Effective value: v, else synth from delta/benchmark when available
+                    let vEff: number | null = (v == null || !Number.isFinite(Number(v))) ? null : Number(v);
+                    if (vEff == null) {
+                      const d = Number((mats?.delta as any)?.[i]?.[j]);
+                      const bm = Number((mats?.benchmark as any)?.[i]?.[j]);
+                      if (Number.isFinite(d) && Number.isFinite(bm) && bm !== 0) {
+                        vEff = d / bm; // approx id_pct from absolute delta
+                      }
+                    }
 
                     return (
                       <td key={`c-${i}-${j}`} className="px-0.5 py-0.5">
                         {isDiag ? (
                           <div
                             className="w-[86px] h-[22px] rounded-lg border border-dashed border-slate-700/50 bg-slate-800/50"
-                            title="—"
+                            title="-"
                           />
                         ) : (
                           <button
@@ -151,12 +204,13 @@ export default function DynamicsMatrix({
                             className={[
                               "w-[86px] h-[22px] rounded-lg border shadow-inner font-mono tabular-nums",
                               "px-1.5 text-[11px]",
-                              colorCls(v),
-                              ringCls({ isSel, preview }),
+                              colorCls(vEff),
+                              ringCls({ isSel, previewExact, previewAny, bridged }),
+                              "border-solid",
                             ].join(" ")}
-                            title={`${b}/${q}`}
+                            title={`${b}/${q}${bridged ? " • bridged via USDT" : ""}${previewExact ? " • preview market" : (previewAny ? " • opposite-only" : " • no preview")}`}
                           >
-                            {fmt6(v)}
+                            {fmt6(vEff)}
                           </button>
                         )}
                       </td>
@@ -180,6 +234,7 @@ function Legend() {
       <Chip color="amber">amber: neutral (0.000000)</Chip>
       <Chip color="emerald">green: &gt; 0</Chip>
       <Chip color="rose">red: &lt; 0</Chip>
+      <span className="inline-flex items-center rounded-lg px-2 py-0.5 border border-dashed border-slate-600/70 bg-slate-900/40">USDT-bridged</span>
       <Ring color="emerald">preview available</Ring>
       <Ring color="rose">preview unavailable</Ring>
       <Ring color="blue">selected pair</Ring>
@@ -196,11 +251,12 @@ function Chip({ color, children }: { color: "amber" | "emerald" | "rose"; childr
   return <span className={["inline-flex items-center rounded-lg px-2 py-0.5 border", map[color]].join(" ")}>{children}</span>;
 }
 
-function Ring({ color, children }: { color: "emerald" | "rose" | "blue"; children: React.ReactNode }) {
+function Ring({ color, children }: { color: "emerald" | "rose" | "blue" | "slate"; children: React.ReactNode }) {
   const map = {
-    emerald: "ring-1 ring-emerald-500/70",
-    rose: "ring-1 ring-rose-500/70",
-    blue: "ring-2 ring-sky-400/80",
+    emerald: "ring-2 ring-lime-600/80 shadow-[0_0_0_2px_rgba(101,163,13,0.28)]",
+    rose: "ring-2 ring-rose-600/80 shadow-[0_0_0_2px_rgba(225,29,72,0.28)]",
+    blue: "ring-2 ring-sky-500/90 shadow-[0_0_0_3px_rgba(56,189,248,0.32)]",
+    slate: "ring-2 ring-slate-500/70 shadow-[0_0_0_2px_rgba(100,116,139,0.25)]",
   } as const;
   return (
     <span className={["inline-flex items-center rounded-lg px-2 py-0.5 border border-slate-700/60 bg-slate-900/40", map[color]].join(" ")}>
@@ -240,9 +296,15 @@ function colorCls(v: number | null) {
   return n > 0 ? pos[idx] : neg[idx];
 }
 
-function ringCls({ isSel, preview }: { isSel: boolean; preview: boolean }) {
-  // availability ring (green/red), selected overlay is blue & thicker
-  const avail = preview ? "ring-1 ring-emerald-500/70" : "ring-1 ring-rose-500/70";
-  const sel = isSel ? "ring-2 ring-sky-400/80 shadow-[0_0_0_1px_rgba(56,189,248,0.3)]" : "";
-  return [avail, sel].filter(Boolean).join(" ");
+function ringCls({ isSel, previewExact, previewAny, bridged }: { isSel: boolean; previewExact: boolean; previewAny: boolean; bridged: boolean }) {
+  // availability ring (green exact, red opposite-only, grey none). Bridged cells are grey-only.
+  const base = bridged
+    ? "ring-2 ring-slate-500/70 shadow-[0_0_0_2px_rgba(100,116,139,0.25)]"
+    : (previewExact
+        ? "ring-2 ring-lime-600/80 shadow-[0_0_0_2px_rgba(101,163,13,0.28)]"
+        : (previewAny
+            ? "ring-2 ring-rose-600/80 shadow-[0_0_0_2px_rgba(225,29,72,0.28)]"
+            : "ring-2 ring-slate-500/70 shadow-[0_0_0_2px_rgba(100,116,139,0.25)]"));
+  const sel = isSel ? "ring-2 ring-sky-500/90 shadow-[0_0_0_3px_rgba(56,189,248,0.32)]" : "";
+  return [base, sel].filter(Boolean).join(" ");
 }

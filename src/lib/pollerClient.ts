@@ -53,7 +53,15 @@ class ClientPoller {
   private timer?: number;
   private heartbeatTimer?: number;
   private lastSec = nowSec();
+  
+private lastBroadcastTickSec = 0;
 
+private safeBroadcastTick(ev: Extract<PollerEvent, {type:"tick"}>) {
+  const s = ev.sec;
+  if (s === this.lastBroadcastTickSec) return; // drop duplicate same-second tick
+  this.lastBroadcastTickSec = s;
+  this.broadcast(ev);
+}
   private config: PollerConfig = { ...FALLBACK_CONFIG };
 
   private state: PollerState = {
@@ -285,8 +293,21 @@ class ClientPoller {
   }
 }
 
+// HMR-safe singleton across client reloads
+declare global {
+  // eslint-disable-next-line no-var
+  var __CRYPTOPI_POLLER__: ClientPoller | undefined;
+}
+
 let singleton: ClientPoller | null = null;
-function _get() { if (!singleton) singleton = new ClientPoller(); return singleton; }
+function _get() {
+  if (typeof window !== "undefined") {
+    if (!window.__CRYPTOPI_POLLER__) window.__CRYPTOPI_POLLER__ = new ClientPoller();
+    return window.__CRYPTOPI_POLLER__;
+  }
+  if (!singleton) singleton = new ClientPoller();
+  return singleton;
+}
 
 export function getPoller() { return _get(); }
 export function subscribe(fn: Subscriber) { return _get().subscribe(fn); }

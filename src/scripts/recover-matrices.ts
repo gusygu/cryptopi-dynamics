@@ -13,10 +13,9 @@ async function main() {
     return;
   }
 
-  const { ts_ms, written } = await buildAndPersistOnce();
+  const { ts_ms } = await buildAndPersistOnce();
   // eslint-disable-next-line no-console
-  console.log(`[recover-matrices] wrote ${written} rows at ${new Date(ts_ms).toISOString()}`);
+  console.log(`[recover-matrices] matrices snapshot at ${new Date(ts_ms).toISOString()}`);
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });
-

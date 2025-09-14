@@ -1,5 +1,6 @@
 // Unified poller: Ingest once -> DB (raw + normalized) -> (optional) trade -> CIN build
 import { db } from '@/core/db';
+import { getAll as getAppSettings } from '@/lib/settings/server';
 import { saveBalancesRaw, upsertWalletSnapshotFromPayload } from '@/sources/ingest/saver';
 import { buildCinAuxForCycle, persistCinAux } from '@/auxiliary/cin-aux/buildCinAux';
 import { compileRoutes } from '@/auxiliary/cin-aux/flow/compiler';
@@ -58,13 +59,24 @@ type Options = {
 let ticking = false;
 let timer: NodeJS.Timeout | null = null;
 
-export function startUnifiedPoller(opts: Options) {
+export async function startUnifiedPoller(opts: Options) {
   const {
     appSessionId = 'dev-session',
-    intervalMs = Number(process.env.POLL_MS ?? 40000),
+    intervalMs = Number(process.env.POLL_MS ?? NaN),
     runCoordinator = String(process.env.RUN_COORDINATOR || 'false').toLowerCase() === 'true',
     provider,
   } = opts;
+
+  // Resolve interval from Settings if not supplied/overridden by env
+  let effectiveIntervalMs = intervalMs;
+  if (!Number.isFinite(effectiveIntervalMs)) {
+    try {
+      const s = await getAppSettings();
+      effectiveIntervalMs = Math.max(5_000, Number(s?.timing?.autoRefreshMs ?? 40_000));
+    } catch {
+      effectiveIntervalMs = 40_000;
+    }
+  }
 
   async function tick() {
     if (ticking) return;
@@ -107,7 +119,7 @@ export function startUnifiedPoller(opts: Options) {
 
   // first tick immediately, then interval
   tick();
-  timer = setInterval(tick, intervalMs);
+  timer = setInterval(tick, effectiveIntervalMs);
 
   return () => {
     if (timer) clearInterval(timer);
