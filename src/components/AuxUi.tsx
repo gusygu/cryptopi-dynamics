@@ -1,7 +1,7 @@
 // src/components/AuxUi.tsx
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useState, useRef } from "react";
 import {
   useMeaGrid,
   useStrAux,
@@ -81,17 +81,26 @@ export default function AuxUi({ coins, base, quote, onSelectPair, className = ""
         });
 
   // Merge DB VM STR summary if available (fallback to bins fields)
-  const strMerged = useMemo(() => {
-    const gfmAbsPctDbField = numOrNull((vmStr as any)?.gfmAbsPct);
-    const gfmAbsPctFromShift = numOrNull(vmStr?.shift) != null ? Math.abs(Number(vmStr!.shift)) * 100 : null;
-    return {
-      gfmAbsPct: gfmAbsPctDbField ?? gfmAbsPctFromShift ?? str?.gfmAbsPct,
-      vTendency: numOrNull(vmStr?.vTendency) ?? str?.vTendency,
-      shifts: numOrNull((vmStr as any)?.shifts) ?? str?.shifts,
-      swaps: numOrNull((vmStr as any)?.swaps) ?? str?.swaps,
-      ts: str?.ts,
-    } as { gfmAbsPct?: number | null; vTendency?: number | null; shifts?: number | null; swaps?: number | null; ts?: number | null };
-  }, [vmStr, str]);
+  const lastStrRef = useRef<{ gfmAbsPct?: number|null; vTendency?: number|null; shifts?: number|null; swaps?: number|null; ts?: number|null } | null>(null);
+
+// After computing strMerged:
+const strMerged = useMemo(() => {
+  const gfmAbsPctDbField = numOrNull((vmStr as any)?.gfmAbsPct);
+  const gfmAbsPctFromShift = numOrNull(vmStr?.shift) != null ? Math.abs(Number(vmStr!.shift)) * 100 : null;
+
+  const merged = {
+    gfmAbsPct: gfmAbsPctDbField ?? gfmAbsPctFromShift ?? str?.gfmAbsPct,
+    vTendency: numOrNull(vmStr?.vTendency) ?? str?.vTendency,
+    shifts: numOrNull((vmStr as any)?.shifts) ?? str?.shifts,
+    swaps: numOrNull((vmStr as any)?.swaps) ?? str?.swaps,
+    ts: str?.ts,
+  };
+
+  // keep last non-null to avoid wiping to zero on first poll
+  const anyVal = merged.gfmAbsPct ?? merged.vTendency ?? merged.shifts ?? merged.swaps;
+  if (anyVal != null) lastStrRef.current = merged;
+  return (anyVal != null ? merged : (lastStrRef.current ?? merged));
+}, [vmStr, str]);
 
   /* ───────── UI */
   return (

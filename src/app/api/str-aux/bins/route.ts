@@ -1,43 +1,50 @@
 // src/app/api/str-aux/bins/route.ts
 import { NextResponse } from "next/server";
 
+// ---- types + analytics ------------------------------------------------------
 import type { WindowKey, MarketPoint, OpeningExact } from "@/str-aux/types";
 import { computeIdhrBinsN, computeFM } from "@/str-aux/idhr";
+import { computeShiftSwap } from "@/str-aux/shift_swap";
 import { getOrInitSymbolSession, updateSymbolSession, exportStreams } from "@/str-aux/session";
 import { upsertSession } from "@/lib/str-aux/sessionDb";
 
+// ---- live data (orderbook + klines + 24h ticker) ---------------------------
 import {
-  fetchKlines,
-  fetchOrderBook,
-  fetchTicker24h,
-  fetch24hAll,
-  type RawKline,
+  fetchOrderBookPoint,   // returns { ts, price(mid), volume }
+  fetchKlinesPoints,     // returns MarketPoint[]
+  fetchTicker24h,        // returns { price, pct24h } or native binance shape
 } from "@/sources/binance";
 
+// ---- settings ---------------------------------------------------------------
 import { getAll as getSettings } from "@/lib/settings/server";
-import {
-  pairsFromSettings,
-  usdtLegsFromCoins,
-  normalizeCoin,
-  type PairAvailability,
-} from "@/lib/markets/pairs";
+import { normalizeCoin } from "@/lib/markets/pairs";
 
 /* -------------------------------------------------------------------------- */
 
 type Interval = "1m" | "5m" | "15m" | "30m" | "1h";
 
+// UI uses: '30m' | '1h' | '3h'
+// Binance has no '3h' → pull 5m with plenty of bars
 function windowToInterval(w: WindowKey): { interval: Interval; klineLimit: number } {
   switch (w) {
-    case "30m": return { interval: "1m",  klineLimit: 240 };
-    case "1h":  return { interval: "1m",  klineLimit: 360 };
-    case "3h":  return { interval: "5m",  klineLimit: 240 };
+    case "30m": return { interval: "1m",  klineLimit: 240 }; // ~4h of minutes
+    case "1h":  return { interval: "1m",  klineLimit: 360 }; // ~6h of minutes
+    case "3h":  return { interval: "5m",  klineLimit: 240 }; // ~20h of 5m bars
     default:    return { interval: "1m",  klineLimit: 240 };
   }
 }
 
-const norm = normalizeCoin;
+function parseWindow(s: string | null | undefined): WindowKey {
+  const v = (s ?? "30m").toLowerCase();
+  return (v === "30m" || v === "1h" || v === "3h") ? (v as WindowKey) : "30m";
+}
 
-/** Parse list tokens (coins or symbols) from query. Accepts `coins=` or `pairs=` */
+function parseBinsParam(s: string | null | undefined, dflt = 128) {
+  const n = Number(s ?? dflt);
+  return Number.isFinite(n) && n > 0 ? Math.min(2048, Math.floor(n)) : dflt;
+}
+
+/** Parse `coins=` list (preferred) or `pairs=` (explicit symbols) */
 function parseListParam(url: URL, keys = ["coins", "pairs"]): string[] {
   for (const k of keys) {
     const raw = String(url.searchParams.get(k) ?? "").trim();
@@ -46,71 +53,68 @@ function parseListParam(url: URL, keys = ["coins", "pairs"]): string[] {
   }
   return [];
 }
-function parseWindow(s: string | null | undefined): WindowKey {
-  const v = (s ?? "30m").toLowerCase();
-  return (v === "30m" || v === "1h" || v === "3h") ? (v as WindowKey) : "30m";
-}
-function parseBinsParam(s: string | null | undefined, dflt = 128) {
-  const n = Number(s ?? dflt);
-  return Number.isFinite(n) && n > 0 ? Math.min(2048, Math.max(8, Math.floor(n))) : dflt;
-}
 
-function klinesToPoints(kl: RawKline[]): MarketPoint[] {
-  return (kl ?? []).map((k) => {
-    const openTime = Number(k[0]);   // ms
-    const close    = Number(k[4]);   // close price
-    const vol      = Number(k[5]);   // base volume
-    return { ts: openTime, price: close, volume: Number.isFinite(vol) ? vol : 0 };
-  });
-}
-async function orderbookPoint(symbol: string): Promise<MarketPoint | null> {
-  try {
-    const ob = await fetchOrderBook(symbol, 100);
-    if (Number.isFinite(ob.mid) && ob.mid > 0) {
-      const vol = (Number(ob.bidVol) || 0) + (Number(ob.askVol) || 0);
-      return { ts: ob.ts, price: ob.mid, volume: vol };
-    }
-  } catch {}
-  return null;
-}
-async function loadPoints(symbol: string, windowKey: WindowKey, binsN: number): Promise<MarketPoint[]> {
-  const { interval, klineLimit } = windowToInterval(windowKey);
-  const pts: MarketPoint[] = [];
-
-  try {
-    const kl = await fetchKlines(symbol, interval, Math.max(klineLimit, binsN * 2));
-    pts.push(...klinesToPoints(kl));
-  } catch {}
-
-  const obPt = await orderbookPoint(symbol);
-  if (obPt) pts.push(obPt);
-
-  // sort + dedup
-  const seen = new Set<number>();
-  const uniq: MarketPoint[] = [];
-  for (const p of pts.sort((a, b) => a.ts - b.ts)) {
-    if (!seen.has(p.ts)) { seen.add(p.ts); uniq.push(p); }
+/** split symbol using common quote suffixes, fallback heuristic otherwise */
+const KNOWN_QUOTES = ["USDT","BTC","ETH","BNB","FDUSD","BUSD","TUSD","USDC","TRY","EUR","BRL","GBP"];
+function splitSymbol(s: string): { base: string; quote: string } {
+  const U = String(s || "").toUpperCase();
+  for (const q of KNOWN_QUOTES) {
+    if (U.endsWith(q) && U.length > q.length) return { base: U.slice(0, U.length - q.length), quote: q };
   }
-  return uniq;
+  // fallback: 3/4-letter base heuristic
+  const base = U.slice(0, 3);
+  const quote = U.slice(3) || "USDT";
+  return { base, quote };
 }
 
-/* ------------------- preview verification (batch, robust) ------------------- */
+/* --------------------- preview: coins → all pairs → verify ------------------ */
 
-async function verifySymbolsMulti(symbols: string[], chunkSize = 200): Promise<Set<string>> {
-  const out = new Set<string>();
-  for (let i = 0; i < symbols.length; i += chunkSize) {
-    const chunk = symbols.slice(i, i + chunkSize);
-    try {
-      const arr = await fetch24hAll(chunk); // Binance returns only existing markets
-      for (const t of arr ?? []) if (t?.symbol) out.add(String(t.symbol).toUpperCase());
-    } catch {
-      // ignore this chunk; USDT fallback still works
+/** cartesian product of coins (ordered), excluding base==quote */
+function symbolsFromCoins(coins: string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < coins.length; i++) {
+    for (let j = 0; j < coins.length; j++) {
+      if (i === j) continue;
+      out.push(`${coins[i]}${coins[j]}`.toUpperCase());
     }
   }
-  return out;
+  return Array.from(new Set(out));
 }
 
-/* --------------------------------- opening --------------------------------- */
+/** Use local preview routes to verify which symbols exist on Binance */
+async function getPreviewVerifiedSymbols(origin: string, coins: string[]): Promise<string[]> {
+  const query = coins.join(",");
+  // 1) Try GET /api/preview/binance?coins=...
+  try {
+    const r = await fetch(`${origin}/api/preview/binance?coins=${encodeURIComponent(query)}`, { cache: "no-store" });
+    if (r.ok) {
+      const j = await r.json() as any;
+      if (j?.ok !== false && Array.isArray(j?.symbols) && j.symbols.length) {
+        return Array.from(new Set(j.symbols.map((s: any) => String(s).toUpperCase())));
+      }
+    }
+  } catch { /* continue */ }
+
+  // 2) Try POST /api/preview/symbols  { coins }
+  try {
+    const r = await fetch(`${origin}/api/preview/symbols`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      cache: "no-store",
+      body: JSON.stringify({ coins }),
+    });
+    if (r.ok) {
+      const j = await r.json() as any;
+      if (j?.ok !== false && Array.isArray(j?.symbols) && j.symbols.length) {
+        return Array.from(new Set(j.symbols.map((s: any) => String(s).toUpperCase())));
+      }
+    }
+  } catch { /* continue */ }
+
+  return []; // preview unavailable
+}
+
+/* --------------------- market points (orderbook + klines) ------------------- */
 
 function ensureOpening(points: MarketPoint[], fallbackPrice: number, tsNow: number): OpeningExact {
   const p0 = Number(points[0]?.price ?? fallbackPrice ?? 0);
@@ -123,79 +127,98 @@ function ensureOpening(points: MarketPoint[], fallbackPrice: number, tsNow: numb
   };
 }
 
-/* --------------------------- symbol split (quotes) -------------------------- */
+// Prefer a live orderbook mid snapshot; fall back to recent klines
+async function loadPoints(symbol: string, windowKey: WindowKey, binsN: number): Promise<MarketPoint[]> {
+  const { interval, klineLimit } = windowToInterval(windowKey);
 
-const KNOWN_QUOTES = ["USDT","BTC","ETH","BNB","FDUSD","BUSD","TUSD","USDC","TRY"];
-function splitSymbol(s: string): { base: string; quote: string } {
-  const U = String(s || "").toUpperCase();
-  for (const q of KNOWN_QUOTES) {
-    if (U.endsWith(q) && U.length > q.length) return { base: U.slice(0, U.length - q.length), quote: q };
+  // fresh orderbook mid (single point)
+  const pts: MarketPoint[] = [];
+  try {
+    const p = await fetchOrderBookPoint(symbol, 100);
+    if (Number.isFinite(p?.price) && p.price > 0) pts.push(p);
+  } catch { /* ignore */ }
+
+  // dense historical klines
+  try {
+    const klPts = await fetchKlinesPoints(symbol, interval, Math.max(klineLimit, binsN * 2));
+    if (Array.isArray(klPts) && klPts.length) pts.unshift(...klPts);
+  } catch { /* ignore */ }
+
+  // dedup + sort
+  const seen = new Set<number>();
+  const uniq: MarketPoint[] = [];
+  for (const p of pts.sort((a, b) => a.ts - b.ts)) {
+    if (!seen.has(p.ts)) { seen.add(p.ts); uniq.push(p); }
   }
-  // fallback: 3/4-letter base heuristic
-  const base = U.slice(0, 3);
-  const quote = U.slice(3) || "USDT";
-  return { base, quote };
+  return uniq;
 }
 
 /* ---------------------------------- GET ------------------------------------ */
 
 export const dynamic = "force-dynamic";
 
+/**
+ * Selection & availability (this patch):
+ *   selected coins  → all possible pairs (base≠quote) → intersect with preview → available symbols
+ *   Then run *unchanged* analytics/persistence for those symbols.
+ */
 export async function GET(req: Request) {
   try {
     const url = new URL(req.url);
+    const origin = url.origin;
     const now = Date.now();
 
     // Settings universe (coins)
     const settings = await getSettings();
     const settingsBases = (settings.coinUniverse ?? [])
-      .map((s: string) => norm(s))
+      .map((s: string) => normalizeCoin(s))
+      .filter(Boolean)
+      .map((s: string) => s.toUpperCase());
+
+    // Client selection (coins preferred). If none provided, use settings.
+    const coinsFromQuery = parseListParam(url, ["coins"]).map(s => s.toUpperCase());
+    const coins = (coinsFromQuery.length ? coinsFromQuery : settingsBases)
       .filter(Boolean);
+    const coinsSet = new Set(coins);
 
-    // Available pairs from settings: verified crosses + USDT legs
-    const available: PairAvailability = await pairsFromSettings(settingsBases, {
-      verify: async (syms) => verifySymbolsMulti(syms),
-      preferVerifiedUsdt: true,
-    });
+    // Build *all* possible symbols (ordered, base≠quote) from the selection
+    const candidateSymbols = symbolsFromCoins(coins);
 
-    // Client selection: accept either coins (→ USDT legs) or explicit symbols
-    const tokens = parseListParam(url, ["coins", "pairs"]); // e.g., ["BTC","ETH"] or ["ETHBTC","BTCUSDT"]
-    const verifiedSet = new Set<string>(available.all ?? []);
-    const allowUnverified = String(url.searchParams.get("allowUnverified") ?? "")
-      .trim().toLowerCase() === "true";
+    // Verify against preview routes
+    const previewSymbols = await getPreviewVerifiedSymbols(origin, coins);
+    const previewSet = new Set(previewSymbols);
 
-    let selectedSymbols: string[];
+    // If preview is empty (network/offline), keep the candidates so UI still shows something
+    const availableAll = (previewSet.size
+      ? candidateSymbols.filter(s => previewSet.has(s))
+      : candidateSymbols);
 
-    const tokensLookLikeSymbols =
-      tokens.length > 0 && tokens.every(t => /^[A-Z0-9]{5,}$/.test(t));
+    // For back-compat: expose USDT subset too, but DO NOT restrict selection to it
+    const availableUsdt = availableAll.filter(s => s.endsWith("USDT"));
 
-    if (!tokens.length) {
-      // default: all USDT legs from settings
-      selectedSymbols = available.usdt.slice();
-    } else if (tokensLookLikeSymbols) {
-      // symbols path — allow unverified when asked; else keep only verified (when we have a set)
-      selectedSymbols = (allowUnverified || !verifiedSet.size)
-        ? tokens.slice()
-        : tokens.filter(s => verifiedSet.has(s));
-    } else {
-      // coins path — expand to USDT legs and keep only verified when possible (or all if allowUnverified)
-      const legs = usdtLegsFromCoins(tokens);
-      selectedSymbols = (allowUnverified || !verifiedSet.size)
-        ? legs
-        : legs.filter(s => verifiedSet.has(s));
-    }
+    // Selected symbols for this request = all available for the chosen coins
+    const selectedSymbols = availableAll.slice();
 
     const windowKey = parseWindow(url.searchParams.get("window"));
     const binsN = parseBinsParam(url.searchParams.get("bins"), 128);
     const appSessionId = (url.searchParams.get("sessionId") ?? "ui").slice(0, 64);
 
-    // No selection → empty response but advertise availability for the UI
+    // Shift/swap params (robust read from settings)
+    const settingsAny = settings as any;
+    const epsilonPct = Number(
+      url.searchParams.get("epsilonPct") ??
+      (settingsAny?.strAux?.epsilonPct) ??
+      0.2
+    );
+    const secondaryMs = Number(url.searchParams.get("secondaryMs") ?? settings?.timing?.autoRefreshMs ?? 2500);
+
+    // No selection → respond with availability only
     if (!selectedSymbols.length) {
       return NextResponse.json({
         ok: true,
         symbols: [],
         out: {},
-        available,
+        available: { usdt: availableUsdt, all: availableAll },
         selected: [],
         window: windowKey,
         ts: now,
@@ -203,43 +226,71 @@ export async function GET(req: Request) {
       });
     }
 
-    /* -------------------- per-symbol processing (concurrent) -------------------- */
+    /* -------------------- per-symbol processing (unchanged) ------------------- */
+    const out: Record<string, any> = {};
 
-    const tasks = selectedSymbols.map(async (symbol) => {
+    for (const symbol of selectedSymbols) {
       const { base, quote } = splitSymbol(symbol);
       try {
-        // Ticker (for % and price fallback)
+        // (1) snapshot: last price + 24h for labels / quick UI
         const t24 = await fetchTicker24h(symbol);
-        const lastPriceFromTicker = Number((t24 as any)?.lastPrice ?? (t24 as any)?.weightedAvgPrice ?? NaN);
-        const pct24h = Number((t24 as any)?.priceChangePercent ?? 0) || 0;
+        const lastPriceFromTicker = Number(
+          (t24 as any)?.lastPrice ??
+          (t24 as any)?.price ??
+          (t24 as any)?.weightedAvgPrice ??
+          NaN
+        );
+        const pct24h = Number(
+          (t24 as any)?.priceChangePercent ??
+          (t24 as any)?.pct24h ??
+          0
+        ) || 0;
 
-        // Points: klines + orderbook snapshot
-        const points: MarketPoint[] = await loadPoints(symbol, windowKey, binsN);
+        // (2) points: orderbook mid (fresh) + klines (dense)
+        const points = await loadPoints(symbol, windowKey, binsN);
+
         if (!points.length || !Number.isFinite(points[points.length - 1]?.price)) {
-          return [symbol, { ok: false, error: "no market data", n: 0, bins: binsN }] as const;
+          out[symbol] = { ok: false, error: "no market data", n: 0, bins: binsN };
+          continue;
         }
 
         const lastPoint = points[points.length - 1];
         const lastPrice = Number.isFinite(lastPoint.price) ? lastPoint.price : lastPriceFromTicker;
 
+        // (3) opening + session
         const opening = ensureOpening(points, lastPriceFromTicker, now);
         if (!(opening.benchmark > 0)) {
-          return [symbol, { ok: false, error: "opening≤0", n: points.length, bins: binsN }] as const;
+          out[symbol] = { ok: false, error: "opening≤0", n: points.length, bins: binsN };
+          continue;
         }
 
-        // Session (stateful) + IDHR/FM
+        // Session orchestration (GFMr/GFMc, swaps, K-cycle shifts, min/max, streams)
         const ss = getOrInitSymbolSession(appSessionId, symbol, opening.benchmark, now);
 
+        // (4) IDHR + FM  (tendency vectors + inertia/disruption included)
         const idhr = computeIdhrBinsN(points, opening, {}, binsN);
         const fm = computeFM(points, opening, { totalBins: binsN });
 
-        const gfmReturns = Number(fm?.gfm ?? 0);
+        // Convert FM.gfm (log return) to price-space (GFMc)
+        const gfmReturns = Number(fm?.gfm ?? 0);            // log(px/p0)
         const gfmCalcPrice = opening.benchmark * Math.exp(gfmReturns);
 
+        // (5) update session with current snapshot
         const upd = updateSymbolSession(ss, lastPrice, lastPoint.ts ?? now, gfmCalcPrice, pct24h);
         const streams = exportStreams(ss);
 
-        // Fresh-open heuristic (avoid polluting DB)
+        // (6) compute shift/swap overlays
+        const gfmr = ss.gfmRefPrice ?? opening.benchmark;
+        const gfm_delta_pct = gfmr > 0 ? ((lastPrice / gfmr) - 1) * 100 : 0;          // signed
+        const id_pct = ((lastPrice / opening.benchmark) - 1) * 100;                   // benchPct (signed)
+        const overlay = computeShiftSwap(appSessionId, {
+          gfm_delta_pct,
+          id_pct,
+          epsilon: Math.abs(epsilonPct),      // in %
+          secondaryMs,
+        });
+
+        // (7) persist (best-effort). openingStamp only at cold-start-ish state.
         const looksLikeFreshOpen =
           ss.priceMin === ss.openingPrice &&
           ss.priceMax === ss.openingPrice &&
@@ -250,25 +301,31 @@ export async function GET(req: Request) {
           await upsertSession(
             { base, quote, window: windowKey, appSessionId },
             ss,
-            looksLikeFreshOpen,
-            !!upd?.isShift,
-            upd?.gfmDeltaAbsPct ?? 0
+            /* openingStamp */ looksLikeFreshOpen,
+            /* shiftStamp   */ !!upd?.isShift || !!overlay?.shift_stamp,
+            /* gfmDelta     */ Math.abs(gfm_delta_pct)
           );
-        } catch {}
+        } catch { /* ignore in dev */ }
 
-        const cardOpeningPct = ss.snapPrev?.pct24h ?? pct24h;
-        const cardLivePct = ss.snapCur?.pct24h ?? pct24h;
-        const cardLiveDrv = ss.snapCur?.pctDrv ?? 0;
-
-        const out = {
+        // (8) response shape (unchanged)
+        out[symbol] = {
           ok: true,
           n: points.length,
           bins: binsN,
           window: windowKey,
+
           cards: {
-            opening: { benchmark: ss.openingPrice, pct24h: cardOpeningPct },
-            live:    { benchmark: ss.snapCur?.price ?? lastPrice, pct24h: cardLivePct, pct_drv: cardLiveDrv },
+            opening: {
+              benchmark: ss.openingPrice,
+              pct24h: ss.snapPrev?.pct24h ?? pct24h,
+            },
+            live: {
+              benchmark: ss.snapCur?.price ?? lastPrice,
+              pct24h: ss.snapCur?.pct24h ?? pct24h,
+              pct_drv: ss.snapCur?.pctDrv ?? 0,
+            },
           },
+
           fm: {
             gfm_ref_price: ss.gfmRefPrice ?? undefined,
             gfm_calc_price: ss.gfmCalcPrice ?? gfmCalcPrice,
@@ -278,30 +335,52 @@ export async function GET(req: Request) {
             vOuter: fm?.vOuter ?? 0,
             inertia: fm?.inertia ?? 0,
             disruption: fm?.disruption ?? 0,
-            nuclei: (fm?.nuclei ?? []).map((n: any, i: number) => ({ binIndex: Number(n?.key?.idhr ?? i) })),
+            nuclei: (fm?.nuclei ?? []).map((n: any, i: number) => ({
+              binIndex: Number(n?.key?.idhr ?? i),
+            })),
           },
-          gfmDelta: { absPct: upd?.gfmDeltaAbsPct ?? 0, anchorPrice: ss.gfmRefPrice ?? null, price: lastPrice },
+
+          gfmDelta: {
+            absPct: Math.abs(gfm_delta_pct),
+            anchorPrice: ss.gfmRefPrice ?? null,
+            price: lastPrice,
+          },
+
           swaps: ss.swaps,
-          shifts: { nShifts: ss.shifts, timelapseSec: Math.floor((now - ss.openingTs) / 1000), latestTs: lastPoint.ts ?? now },
-          shift_stamp: !!upd?.isShift,
-          sessionStats: { priceMin: ss.priceMin, priceMax: ss.priceMax, benchPctMin: ss.benchPctMin, benchPctMax: ss.benchPctMax },
+          shifts: {
+            nShifts: ss.shifts,
+            timelapseSec: Math.floor((now - ss.openingTs) / 1000),
+            latestTs: lastPoint.ts ?? now,
+          },
+
+          overlay: {
+            shift_stamp: !!overlay.shift_stamp,
+            shift_n: overlay.shift_n,
+            shift_hms: overlay.shift_hms,     // "hh:mm:ss"
+            swap_n: overlay.swap_n,
+            swap_sign: overlay.swap_sign,     // "ascending" | "descending" | null
+            swap_hms: overlay.swap_hms,       // "hh:mm:ss"
+          },
+
+          sessionStats: {
+            priceMin: ss.priceMin,
+            priceMax: ss.priceMax,
+            benchPctMin: ss.benchPctMin,
+            benchPctMax: ss.benchPctMax,
+          },
+
           streams,
           hist: { counts: idhr?.counts ?? [] },
-          meta: { uiEpoch: upd?.uiEpoch ?? ss.uiEpoch },
+
+          meta: {
+            uiEpoch: upd?.uiEpoch ?? ss.uiEpoch,
+            epsilonPct,
+            secondaryMs,
+          },
           lastUpdateTs: lastPoint.ts ?? now,
         };
-        return [symbol, out] as const;
       } catch (err: any) {
-        return [symbol, { ok: false, error: String(err?.message ?? err) }] as const;
-      }
-    });
-
-    const settled = await Promise.allSettled(tasks);
-    const out: Record<string, any> = {};
-    for (const s of settled) {
-      if (s.status === "fulfilled") {
-        const [sym, val] = s.value;
-        out[sym] = val;
+        out[symbol] = { ok: false, error: String(err?.message ?? err) };
       }
     }
 
@@ -310,7 +389,11 @@ export async function GET(req: Request) {
       ok: true,
       symbols,
       out,
-      available,
+      // availability (now truly reflects preview∩candidates)
+      available: {
+        usdt: availableUsdt,
+        all: availableAll,
+      },
       selected: selectedSymbols,
       window: windowKey,
       ts: now,

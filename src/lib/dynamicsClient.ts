@@ -58,6 +58,28 @@ export type StrBinsResp = {
   selected?: string[];
 };
 
+// src/lib/dynamicsClient.ts
+export type SwapTag = {
+  count: number;
+  direction: "up" | "down" | "frozen";
+  changedAtIso?: string;
+};
+
+export type RowMetrics = {
+  benchmark: number;
+  id_pct: number;
+  vTendency?: number;
+  inertia?: "low" | "neutral" | "high" | "frozen";
+  swapTag: SwapTag;
+};
+
+export type ArbRow = {
+  ci: string;
+  cols?: Partial<Record<"cb_ci" | "ci_ca" | "ca_ci", Partial<RowMetrics>>>;
+  metrics?: Partial<RowMetrics>;
+};
+
+
 /* --------------------------------- helpers --------------------------------- */
 
 const UPPER = (s: string) => String(s || "").trim().toUpperCase();
@@ -397,80 +419,55 @@ export function buildArbRows(
 
 // … keep imports …
 
+
 export function useArbRows(
   Ca: string,
   Cb: string,
   candidates: string[],
-  opts?: {
-    window?: "30m" | "1h" | "3h";
-    bins?: number;
-    sessionId?: string;
-    allowUnverified?: boolean;   // NEW
-    includeReverse?: boolean;    // NEW (defaults true)
-  }
+  opts?: { window?: "30m" | "1h" | "3h"; bins?: number; sessionId?: string; allowUnverified?: boolean; includeReverse?: boolean }
 ) {
-  const [rows, setRows] = useState<ReturnType<typeof buildArbRows>>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setErr] = useState<string | null>(null);
+  const [rows, setRows] = useState<ArbRow[]>([]);
   const abortRef = useRef<AbortController | null>(null);
 
   const refresh = useCallback(async () => {
     abortRef.current?.abort();
-    const ac = new AbortController();
-    abortRef.current = ac;
-    try {
-      setLoading(true);
-      setErr(null);
+    const ac = new AbortController(); abortRef.current = ac;
 
-      const A = (Ca || "").toUpperCase();
-      const B = (Cb || "").toUpperCase();
-      const wantReverse = opts?.includeReverse !== false;
+    const A = (Ca || "").toUpperCase();
+    const B = (Cb || "").toUpperCase();
+    const wantReverse = opts?.includeReverse !== false;
 
-      // Collect all required symbols for each candidate:
-      //   cb_ci, ci_ca, ca_ci (+ optional reverses to fill gaps in server coverage)
-      const syms = new Set<string>();
-      for (const ci0 of candidates) {
-        const CI = String(ci0 || "").toUpperCase();
-        syms.add(`${B}${CI}`); // cb_ci
-        syms.add(`${CI}${A}`); // ci_ca
-        syms.add(`${A}${CI}`); // ca_ci
-        if (wantReverse) {
-          syms.add(`${CI}${B}`); // reverse of cb_ci
-          syms.add(`${A}${B}`);  // extra leg sometimes needed by UI
-          syms.add(`${B}${A}`);  // reverse AB (for pills/headers that peek it)
-        }
-      }
-      if (syms.size === 0) { setRows([]); return; }
-
-      const u = new URL("/api/str-aux/bins", window.location.origin);
-      u.searchParams.set("pairs", Array.from(syms).join(","));
-      u.searchParams.set("window", opts?.window ?? "30m");
-      u.searchParams.set("bins", String(opts?.bins ?? 128));
-      u.searchParams.set("sessionId", opts?.sessionId ?? "dyn");
-      if (opts?.allowUnverified) u.searchParams.set("allowUnverified", "true"); // NEW
-
-      const j = await fetchJSON<StrBinsResp>(u, ac.signal);
-      const out = (j?.out ?? {}) as Record<string, StrBinsOut>;
-      const map: Record<string, StrBinsOut | undefined> = {};
-      for (const k of Object.keys(out)) map[k] = out[k];
-
-      setRows(buildArbRows(A, B, candidates, map));
-    } catch (e: any) {
-      if (e?.name !== "AbortError") setErr(String(e?.message || e));
-      setRows([]);
-    } finally {
-      setLoading(false);
+    const syms = new Set<string>();
+    for (const ci0 of candidates) {
+      const CI = String(ci0 || "").toUpperCase();
+      if (!CI || CI === A || CI === B) continue;
+      syms.add(`${B}${CI}`); // cb_ci
+      syms.add(`${CI}${A}`); // ci_ca
+      syms.add(`${A}${CI}`); // ca_ci
+      if (wantReverse) { syms.add(`${CI}${B}`); syms.add(`${B}${A}`); syms.add(`${A}${B}`); }
     }
+    if (!syms.size) { setRows([]); return; }
+
+    const u = new URL("/api/str-aux/bins", window.location.origin);
+    u.searchParams.set("pairs", Array.from(syms).join(","));
+    u.searchParams.set("window", opts?.window ?? "30m");
+    u.searchParams.set("bins", String(opts?.bins ?? 128));
+    u.searchParams.set("sessionId", opts?.sessionId ?? "dyn");
+    if (opts?.allowUnverified) u.searchParams.set("allowUnverified", "true");
+    u.searchParams.set("t", String(Date.now())); // cache-bust
+
+    const j = await fetchJSON<StrBinsResp>(u, ac.signal);
+    const bag: Record<string, StrBinsOut | undefined> = j?.out ?? {};
+    setRows(buildArbRows(A, B, candidates, bag));
   }, [Ca, Cb, candidates.join(","), opts?.window, opts?.bins, opts?.sessionId, opts?.allowUnverified, opts?.includeReverse]);
 
   useEffect(() => {
     refresh();
-    // SUBSCRIBE to the shared poller so the table auto-refreshes
     const unsub = subscribe((ev) => {
       if (ev.type === "tick40" || ev.type === "tick120" || ev.type === "refresh") refresh();
     });
     return () => { unsub(); abortRef.current?.abort(); };
   }, [refresh]);
 
-  return { rows, loading, error, refresh } as const;
+  return { rows, loading: false, error: null, refresh } as const;
 }

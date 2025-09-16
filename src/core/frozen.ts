@@ -1,29 +1,41 @@
 // src/core/frozen.ts
+import { getSettingsServer } from "@/lib/settings/server";
+
+const asCoins = (list: any): string[] =>
+  Array.isArray(list) ? Array.from(new Set(list.map((x:any)=>String(x).toUpperCase()).filter(Boolean))) : [];
+
 export async function getFrozenSetFromMatricesLatest(appSessionId: string, cycleTs: number) {
-  const base = process.env.INTERNAL_BASE_URL || 'http://localhost:3000';
+  let coins: string[] = [];
+  try {
+    const s = await getSettingsServer().catch(() => null as any);
+    coins = asCoins(s?.coinUniverse);
+  } catch {}
+  if (!coins.length && process.env.NEXT_PUBLIC_COINS) {
+    coins = asCoins(String(process.env.NEXT_PUBLIC_COINS).split(","));
+  }
+  if (!coins.length) coins = ["BTC","ETH","BNB","SOL","ADA","XRP","PEPE","USDT"];
+
+  const base = process.env.INTERNAL_BASE_URL || "http://localhost:3000";
   const url =
-    `${base}/api/matrices/latest` +
-    `?appSessionId=${encodeURIComponent(appSessionId)}` +
+    `${base}/api/matrices/latest?coins=${encodeURIComponent(coins.join(","))}` +
+    `&appSessionId=${encodeURIComponent(appSessionId)}` +
     `&cycleTs=${cycleTs}&t=${Date.now()}`;
 
-  const r = await fetch(url, { cache: 'no-store' });
+  const r = await fetch(url, { cache: "no-store" });
   if (!r.ok) return new Set<string>();
-
   const j = await r.json();
-  const coins: string[] = Array.isArray(j?.coins)
-    ? j.coins.map((c: any) => String(c).toUpperCase())
-    : [];
 
+  const coinsResp: string[] = asCoins(j?.coins);
   const grid: boolean[][] | undefined =
-    Array.isArray(j?.flags?.id_pct) ? (j.flags.id_pct as boolean[][])
-    : j?.flags?.id_pct?.frozen;
+    Array.isArray(j?.flags?.id_pct) ? j.flags.id_pct as boolean[][] :
+    j?.flags?.id_pct?.frozen;
 
-  if (!coins.length || !grid) return new Set<string>();
+  if (!coinsResp.length || !grid) return new Set<string>();
 
   const set = new Set<string>();
-  for (let i = 0; i < coins.length; i++) {
-    for (let jdx = 0; jdx < coins.length; jdx++) {
-      if (grid[i]?.[jdx]) set.add(`${coins[i]}|${coins[jdx]}`);
+  for (let i=0;i<coinsResp.length;i++) {
+    for (let jdx=0;jdx<coinsResp.length;jdx++) {
+      if (grid[i]?.[jdx]) set.add(`${coinsResp[i]}|${coinsResp[jdx]}`);
     }
   }
   return set;

@@ -1,20 +1,26 @@
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import HomeBar from '@/components/HomeBar';
-import NavBar from '@/components/NavBar';
 import Histogram from '@/app/str-aux/Histogram';
 import CoinPanel from '@/app/str-aux/CoinPanel';
 import { useSettings } from '@/lib/settings/provider';
 import { subscribe, getState } from '@/lib/pollerClient';
 
 type WindowSel = '30m' | '1h' | '3h';
-type PairAvailability = { usdt: string[]; cross: string[]; all: string[] };
+
+type PairAvailability = {
+  usdt: string[];     // server-verified USDT-quoted
+  all: string[];      // server-verified ALL quotes (USDT + cross + fiat supported by preview)
+  // (optional) route may also send availableBuckets; we don’t need it here
+};
 
 type FM = {
-  gfm?: number; sigma?: number; zAbs?: number; vInner?: number; vOuter?: number;
-  inertia?: number; disruption?: number; nuclei?: { binIndex: number }[];
-  gfm_ref_price?: number; gfm_calc_price?: number;
+  gfm_ref_price?: number;   // GFMr (anchor)
+  gfm_calc_price?: number;  // GFMc (live)
+  sigma?: number; zAbs?: number; vInner?: number; vOuter?: number;
+  inertia?: number; disruption?: number;
+  nuclei?: { binIndex: number }[];
 };
 type Hist = { counts: number[] };
 type CoinOut = {
@@ -29,22 +35,38 @@ type CoinOut = {
   fm?: FM;
   hist?: Hist;
   error?: string;
+  overlay?: {
+    shift_stamp?: boolean;
+    shift_n?: number;
+    shift_hms?: string;
+    swap_n?: number;
+    swap_sign?: 'ascending' | 'descending' | null;
+    swap_hms?: string;
+  };
+  gfmDelta?: { absPct?: number; anchorPrice?: number | null; price?: number | null };
+  streams?: {
+    benchmark?: { prev: number; cur: number; greatest: number };
+    pct24h?:    { prev: number; cur: number; greatest: number };
+    pct_drv?:   { prev: number; cur: number; greatest: number };
+  };
+  sessionStats?: { priceMin: number; priceMax: number; benchPctMin: number; benchPctMax: number };
+  meta?: { uiEpoch?: number };
+  lastUpdateTs?: number;
 };
 type BinsResponse = {
   ok: boolean;
   ts: number;
-  symbols: string[];
+  symbols: string[];                        // processed symbols this tick
   out: Record<string, CoinOut>;
-  available?: PairAvailability;
-  selected?: string[];
+  available?: PairAvailability;             // verified availability
+  selected?: string[];                      // server’s chosen selection (subset of available)
   timing?: { autoRefreshMs?: number; secondaryEnabled?: boolean; secondaryCycles?: number };
+  window?: WindowSel;
 };
-
-/* ---------------- utils ---------------- */
 
 const uniqUpper = (xs: string[]) => {
   const s = new Set<string>(), out: string[] = [];
-  for (const x of xs) {
+  for (const x of xs || []) {
     const u = String(x || '').trim().toUpperCase();
     if (!u || s.has(u)) continue;
     s.add(u);
@@ -52,62 +74,27 @@ const uniqUpper = (xs: string[]) => {
   }
   return out;
 };
-
-const usdtLegsFromCoins = (coins: string[]) =>
-  uniqUpper(coins.filter(c => c !== 'USDT').map(c => `${c}USDT`));
-
-const crossPairsFromCoins = (coins: string[]) => {
-  const cs = uniqUpper(coins).filter(c => c !== 'USDT');
-  const out: string[] = [];
-  for (let i = 0; i < cs.length; i++) {
-    for (let j = 0; j < cs.length; j++) {
-      if (i === j) continue;
-      out.push(`${cs[i]}${cs[j]}`);
-    }
-  }
-  return uniqUpper(out);
-};
-
-// Verify a list of symbols using Binance preview (batching)
-async function verifyPreview(symbols: string[], chunk = 180): Promise<Set<string>> {
-  const ok = new Set<string>();
-  for (let i = 0; i < symbols.length; i += chunk) {
-    const batch = symbols.slice(i, i + chunk);
-    const url = `https://api.binance.com/api/v3/ticker/24hr?symbols=${encodeURIComponent(JSON.stringify(batch))}`;
-    try {
-      const r = await fetch(url, { cache: 'no-store' });
-      if (!r.ok) continue;
-      const arr = (await r.json()) as Array<{ symbol?: string }>;
-      for (const t of arr ?? []) if (t?.symbol) ok.add(String(t.symbol).toUpperCase());
-    } catch {
-      // ignore this batch; we’ll still keep USDT legs
-    }
-  }
-  return ok;
-}
+const isUsdt = (sym: string) => /USDT$/.test(sym);
 
 function prettyTs(ts?: number) {
   if (!ts) return '—';
   try { return new Date(ts).toLocaleString(); } catch { return String(ts); }
 }
 
-/* ---------------- page ---------------- */
-
 export default function StrAuxPage() {
   const { settings } = useSettings();
 
-  // timing
+  // metronome/poller timing
   const [baseMs, setBaseMs] = useState<number>(() => Math.max(1000, getState().dur40 * 1000));
   const secondaryEnabled = !!settings.timing?.secondaryEnabled;
   const secondaryCycles = Math.max(1, Math.min(10, Number(settings.timing?.secondaryCycles ?? 3)));
 
-  // universe from Settings
+  // Settings coin universe (display + coins= param)
   const bases = useMemo(
     () => uniqUpper(settings.coinUniverse?.length ? settings.coinUniverse : ['BTC','ETH','BNB','SOL','ADA','XRP','DOGE','USDT']),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [settings.coinUniverse]
   );
-
-  // coin selector
   const [pickedCoins, setPickedCoins] = useState<string[]>(bases);
   useEffect(() => { setPickedCoins(bases); }, [bases.join(',')]);
   const toggleCoin = (c: string) =>
@@ -117,68 +104,31 @@ export default function StrAuxPage() {
   const [auto, setAuto] = useState(true);
   const [page, setPage] = useState(0);
 
-  // availability (from API) + client preview
-  const [availableApi, setAvailableApi] = useState<PairAvailability>({ usdt: [], cross: [], all: [] });
-  const [availableUi, setAvailableUi] = useState<PairAvailability>({ usdt: [], cross: [], all: [] });
+  // server-verified availability
+  const [available, setAvailable] = useState<PairAvailability>({ usdt: [], all: [] });
 
-  // selected pairs (symbols)
+  // user selection (symbols)
   const [pairs, setPairs] = useState<string[]>([]);
 
-  // bins response
+  // data + ui state
   const [data, setData] = useState<BinsResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const timer = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  // NEW: toggles
-  const [showUnverified, setShowUnverified] = useState(false);
   const [hideNoData, setHideNoData] = useState(true);
 
-  // Build UI-side availability from picked coins
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const coins = pickedCoins.length ? pickedCoins : bases;
-      const usdt = usdtLegsFromCoins(coins);
-      const crossCand = crossPairsFromCoins(coins);
-      const verified = await verifyPreview(crossCand);
-      if (cancelled) return;
-      const cross = showUnverified ? crossCand : crossCand.filter(s => verified.has(s));
-      const all = uniqUpper([...usdt, ...cross]);
-      setAvailableUi({ usdt, cross, all });
-      // If nothing selected yet, seed with USDT legs
-      if (!pairs.length && usdt.length) setPairs(usdt);
-    })();
-    return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pickedCoins.join(','), bases.join(','), showUnverified]);
-
-  // Merge API + UI availability
-  const availableUX = useMemo(() => {
-    const usdt = availableApi.usdt.length ? availableApi.usdt : availableUi.usdt;
-    const cross = uniqUpper([...(availableApi.cross ?? []), ...(availableUi.cross ?? [])]);
-    const all = uniqUpper([...(availableApi.all ?? []), ...usdt, ...cross]);
-    return { usdt, cross, all } as PairAvailability;
-  }, [availableApi, availableUi]);
-
-  // prune pairs that fell out of availability
-  useEffect(() => {
-    if (!pairs.length) return;
-    const allowed = new Set(availableUX.all);
-    setPairs(prev => prev.filter(p => allowed.has(p)));
-  }, [availableUX.all.join(','), pairs.length]);
-
-  // fetch bins route (supports pairs= and allowUnverified)
+  // Fetch bins route (server drives availability; we pass coins= for preview filtering)
   const fetchOnce = useCallback(async (opts?: { signal?: AbortSignal }) => {
     setLoading(true);
     setErr(null);
     try {
       const qs = new URLSearchParams();
+      // Always pass coins= so the server availability mirrors the picker
+      const coins = pickedCoins.length ? pickedCoins : bases;
+      if (coins.length) qs.set('coins', coins.join(','));
       if (pairs.length) qs.set('pairs', pairs.join(','));
       qs.set('window', windowSel);
       qs.set('bins', '128');
       qs.set('sessionId', 'ui');
-      if (showUnverified) qs.set('allowUnverified', 'true');
 
       const r = await fetch(`/api/str-aux/bins?${qs.toString()}`, { cache: 'no-store', signal: opts?.signal });
       const j = (await r.json()) as BinsResponse;
@@ -186,19 +136,27 @@ export default function StrAuxPage() {
 
       setData(j);
 
-      // hydrate API availability if provided
+      // Update availability from server (verified)
       if (j.available) {
-        setAvailableApi({
-          usdt: Array.isArray(j.available.usdt) ? j.available.usdt : [],
-          cross: Array.isArray(j.available.cross) ? j.available.cross : [],
-          all: Array.isArray(j.available.all) ? j.available.all : [],
-        });
+        const nextAvail: PairAvailability = {
+          usdt: Array.isArray(j.available.usdt) ? uniqUpper(j.available.usdt) : [],
+          all:  Array.isArray(j.available.all)  ? uniqUpper(j.available.all)  : [],
+        };
+        setAvailable(nextAvail);
+
+        // Seed pairs on first successful fetch OR if current pairs are outside availability
+        if (!pairs.length) {
+          if (j.selected?.length) setPairs(uniqUpper(j.selected));
+          else if (nextAvail.usdt.length) setPairs(nextAvail.usdt);
+          else if (nextAvail.all.length) setPairs(nextAvail.all.slice(0, 6)); // small start
+        } else {
+          // prune any pairs that fell out of availability
+          const allowed = new Set(nextAvail.all);
+          setPairs(prev => prev.filter(p => allowed.has(p)));
+        }
       }
 
-      // If nothing selected yet and server proposes a selection, accept it
-      if (!pairs.length && j.selected?.length) setPairs(j.selected);
-
-      // NEW: auto-prune selected pairs that returned ok:false (removes “no data” tiles)
+      // Optionally remove tiles that returned ok:false
       if (hideNoData && j.symbols?.length) {
         const okSet = new Set(j.symbols.filter(s => j.out?.[s]?.ok));
         setPairs(prev => prev.filter(p => okSet.has(p)));
@@ -211,9 +169,9 @@ export default function StrAuxPage() {
     } finally {
       setLoading(false);
     }
-  }, [pairs, windowSel, showUnverified, hideNoData]);
+  }, [pairs, windowSel, pickedCoins, bases, hideNoData]);
 
-  // poller-driven refresh (single clock across app)
+  // Poller
   useEffect(() => {
     let cancelled = false;
     const ac = new AbortController();
@@ -235,41 +193,52 @@ export default function StrAuxPage() {
     return () => { cancelled = true; ac.abort(); unsub(); };
   }, [fetchOnce, auto, secondaryEnabled, secondaryCycles]);
 
-  // pagination — optionally hide no-data in the grid
+  // Symbols to render (optionally hide “no data”)
   const symbolsAll = useMemo(() => (data?.symbols?.length ? data.symbols : pairs), [data?.symbols, pairs]);
   const symbols = useMemo(() => {
     if (!hideNoData) return symbolsAll;
     const out: string[] = [];
     for (const s of symbolsAll) {
       const ok = data?.out?.[s]?.ok;
-      if (ok === undefined) out.push(s);       // if we don't know yet, keep
-      else if (ok) out.push(s);                // keep only “ok”
+      if (ok === undefined) out.push(s);
+      else if (ok) out.push(s);
     }
     return out;
   }, [symbolsAll, data?.out, hideNoData]);
 
-  const PAGE_SIZE = 4;
+  // Pagination (3 columns × 2 rows)
+  const PAGE_SIZE = 6;
   const pageCount = Math.max(1, Math.ceil(symbols.length / PAGE_SIZE));
   const pageClamped = Math.min(page, pageCount - 1);
   const visible = symbols.slice(pageClamped * PAGE_SIZE, pageClamped * PAGE_SIZE + PAGE_SIZE);
   useEffect(() => { setPage(0); }, [pairs.join(','), hideNoData]);
 
+  // Dropdown options = server-verified availability minus currently selected
+  const addOptions = useMemo(() => {
+    const setSel = new Set(pairs);
+    const usdtOpts = available.usdt.filter(s => !setSel.has(s));
+    const nonUsdt = available.all.filter(s => !isUsdt(s) && !setSel.has(s));
+    // USDT first, then others
+    return [...usdtOpts, ...nonUsdt];
+  }, [available.usdt, available.all, pairs]);
+
   // helpers
   const addPair = (s: string) => setPairs(p => uniqUpper([...(p ?? []), s]));
   const removePair = (s: string) => setPairs(p => (p ?? []).filter(x => x !== s));
-  const resetUsdt = () => setPairs(availableUX.usdt);
+  const resetUsdt = () => setPairs(available.usdt);
 
-  /* ---------------- UI ---------------- */
+  /* -------------------------------- UI -------------------------------- */
 
   return (
     <div className="min-h-dvh bg-slate-950 text-slate-100">
       <HomeBar className="sticky top-0 z-30 border-b border-slate-800/60 bg-slate-950/80 backdrop-blur" />
-      <NavBar />
-      <div className="mx-auto max-w-[1600px] p-6 space-y-6">
+      <div className="mx-auto max-w-[1800px] p-6 space-y-6">
         <header className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
           <div>
             <h1 className="text-2xl font-semibold">STR-AUX — Multi Dash</h1>
-            <p className="text-sm text-slate-400">Live IDHR(128) · orderbook + klines · {bases.length} coins in Settings</p>
+            <p className="text-sm text-slate-400">
+              Live IDHR(128) · orderbook + klines · {bases.length} coins in Settings
+            </p>
             <p className="text-xs text-slate-400">
               Metronome <span className="font-mono">{Math.round(baseMs/1000)}s</span>
               {secondaryEnabled ? <> · secondary every <span className="font-mono">{secondaryCycles}</span> cycles</> : null}
@@ -301,7 +270,7 @@ export default function StrAuxPage() {
           </div>
         </header>
 
-        {/* coin selector */}
+        {/* coin selector drives coins= param */}
         <section className="rounded-xl border border-slate-800 bg-slate-900/50 p-4">
           <div className="text-sm text-slate-400 mb-2">Coins</div>
           <div className="flex flex-wrap gap-2">
@@ -345,38 +314,16 @@ export default function StrAuxPage() {
             </div>
 
             <div className="ml-auto flex items-center gap-2">
-              <label
-                title="Include all pair combinations (even if not in Binance preview)"
-                className="inline-flex items-center gap-2 px-2 py-1 rounded-lg bg-slate-800/70 border border-slate-700 text-sm"
-              >
-                <input type="checkbox" checked={showUnverified} onChange={e => setShowUnverified(e.target.checked)} />
-                show unverified
-              </label>
-
-              <label
-                title="Automatically remove tiles that return no data"
-                className="inline-flex items-center gap-2 px-2 py-1 rounded-lg bg-slate-800/70 border border-slate-700 text-sm"
-              >
-                <input type="checkbox" checked={hideNoData} onChange={e => setHideNoData(e.target.checked)} />
-                hide no data
-              </label>
-
+              {/* server-verified only; toggle removed to avoid leftovers */}
               <select
-                className="px-2 py-1 text-sm rounded-lg bg-slate-800/70 border border-slate-700 min-w-[260px]"
+                className="px-2 py-1 text-sm rounded-lg bg-slate-800/70 border border-slate-700 min-w-[280px]"
                 onChange={(e) => { const v = e.target.value; if (v) { addPair(v); e.currentTarget.selectedIndex = 0; } }}
                 value=""
-                title="Add pair"
+                title="Add pair (server-verified)"
               >
                 <option value="" disabled>Add pair…</option>
-                {/* USDT legs first */}
-                {availableUX.usdt.filter(s => !pairs.includes(s)).map((s) => (
-                  <option key={s} value={s}>{s} · USDT</option>
-                ))}
-                {/* Verified or All cross (per toggle) */}
-                {availableUX.cross.filter(s => !pairs.includes(s)).map((s) => (
-                  <option key={s} value={s}>
-                    {s} · cross{showUnverified ? ' (unverified ok)' : ''}
-                  </option>
+                {addOptions.map((s) => (
+                  <option key={s} value={s}>{s}{isUsdt(s) ? ' · USDT' : ' · cross/fiat'}</option>
                 ))}
               </select>
 
@@ -384,7 +331,7 @@ export default function StrAuxPage() {
                 className="px-2 py-1 rounded-lg text-sm bg-slate-800/70 border border-slate-700 hover:bg-slate-800"
                 onClick={resetUsdt}
                 title="Reset to USDT legs"
-                disabled={!availableUX.usdt.length}
+                disabled={!available.usdt.length}
               >
                 Reset USDT
               </button>
@@ -392,8 +339,8 @@ export default function StrAuxPage() {
           </div>
 
           <p className="text-xs text-slate-400">
-            Options from selection: <span className="font-mono">{availableUX.usdt.length}</span> USDT,&nbsp;
-            <span className="font-mono">{availableUX.cross.length}</span> cross
+            Options (server-verified): <span className="font-mono">{available.usdt.length}</span> USDT,&nbsp;
+            <span className="font-mono">{Math.max(0, available.all.length - available.usdt.length)}</span> cross/fiat
           </p>
         </section>
 
@@ -405,7 +352,7 @@ export default function StrAuxPage() {
         )}
 
         {/* panels */}
-        <section className="grid gap-5 md:grid-cols-2">
+        <section className="grid gap-5 grid-cols-1 md:grid-cols-2 xl:grid-cols-3">
           {visible.map((sym) => {
             const co = data?.out?.[sym] as CoinOut | undefined;
             return (

@@ -3,19 +3,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { subscribe } from "@/lib/pollerClient";
 
 export type MeaGrid = Record<string, Record<string, number | null>>;
-export type MeaResp = {
-  ok: boolean;
-  coins: string[];
-  k: number;
-  grid: MeaGrid;
-  meta?: { warnings?: string[] };
-};
+export type MeaResp = { ok: boolean; coins: string[]; k: number; grid: MeaGrid; meta?: { warnings?: string[] } };
 
-export type UseMeaAuxOpts = {
-  coins?: string[];
-  k?: number;
-  refreshMs?: number;          // interval for auto refresh
-};
+export type UseMeaAuxOpts = { coins?: string[]; k?: number; refreshMs?: number };
 
 function parseCoinsEnv(): string[] | undefined {
   const raw = process.env.NEXT_PUBLIC_COINS ?? "";
@@ -25,74 +15,51 @@ function parseCoinsEnv(): string[] | undefined {
 
 export function useMeaAux(opts: UseMeaAuxOpts = {}) {
   const defaultCoins = useMemo(() => opts.coins ?? parseCoinsEnv(), [opts.coins]);
-
-  const [coins, setCoins] = useState<string[] | undefined>(defaultCoins);
-  const [k, setK] = useState<number | undefined>(opts.k);
-
   const [data, setData] = useState<MeaResp | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-  const [errorObj, setErrorObj] = useState<Error | null>(null);
-  const [loading, setLoading] = useState<boolean>(false);
-
-  const started = useRef<boolean>(false);
-
-  const qs = useMemo(() => {
-    const sp = new URLSearchParams();
-    if (coins && coins.length) sp.set("coins", coins.join(","));
-    if (k && k > 0) sp.set("k", String(Math.floor(k)));
-    return sp.toString();
-  }, [coins, k]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   const fetchNow = useCallback(async () => {
-    setLoading(true);
-    setErr(null);
-    setErrorObj(null);
-    const ctrl = new AbortController();
-    const timeout = setTimeout(() => ctrl.abort(), 15000);
     try {
-      const url = `/api/mea-aux${qs ? `?${qs}` : ""}`;
-      const res = await fetch(url, { cache: "no-store", signal: ctrl.signal });
-      if (!res.ok) {
-        const body = await res.text().catch(() => "");
-        throw new Error(`${res.status} ${body}`);
-      }
-      const j = (await res.json()) as MeaResp;
+      abortRef.current?.abort();
+      const ac = new AbortController();
+      abortRef.current = ac;
+
+      setLoading(true);
+      setError(null);
+
+      const coins = (opts.coins ?? defaultCoins ?? []).join(",");
+      const k = Number.isFinite(opts.k as any) ? Number(opts.k) : undefined;
+      const url = new URL("/api/mea-aux", window.location.origin);
+      if (coins) url.searchParams.set("coins", coins);
+      if (k != null) url.searchParams.set("k", String(k));
+      url.searchParams.set("t", String(Date.now())); // cache-bust
+
+      const r = await fetch(url.toString(), { signal: ac.signal, cache: "no-store" });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const j = (await r.json()) as MeaResp;
       setData(j);
-      setErrorObj(null);
     } catch (e: any) {
-      const msg = e?.message ?? String(e);
-      setErr(msg);
-      setErrorObj(e instanceof Error ? e : new Error(msg));
+      if (e?.name !== "AbortError") setError(String(e?.message ?? e));
     } finally {
-      clearTimeout(timeout);
       setLoading(false);
     }
-  }, [qs]);
+  }, [opts.coins, defaultCoins, opts.k]);
 
-  const start = useCallback(() => { started.current = true; }, []);
-  const stop = useCallback(() => { started.current = false; }, []);
-
-  useEffect(() => {
-    return () => stop();
-  }, [stop]);
-
-  // Centralized refresh: follow universal poller
+  // Initial fetch + poller-driven refresh
   useEffect(() => {
     fetchNow();
     const unsub = subscribe((ev) => {
-      if (ev.type === "tick40" || ev.type === "tick120" || ev.type === "refresh") fetchNow();
+      if (ev.type === "refresh" || ev.type === "tick120" || ev.type === "tick40") {
+        fetchNow();
+      }
     });
-    return () => { unsub(); };
+    return () => {
+      abortRef.current?.abort();
+      unsub();
+    };
   }, [fetchNow]);
 
-  return {
-    coins, setCoins,
-    k, setK,
-    data,
-    err,
-    error: errorObj,
-    loading,
-    refresh: fetchNow,
-    start, stop,
-  };
+  return { data, grid: data?.grid, coins: data?.coins ?? [], k: data?.k, loading, error, refresh: fetchNow };
 }

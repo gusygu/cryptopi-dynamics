@@ -109,13 +109,22 @@ export default function AssetsIdentity({
 
       // wallet balances
       try {
-        const uWal = new URL("/api/providers/binance/wallet", window.location.origin);
-        const rWal = await fetch(uWal, { cache: "no-store", signal: ac.signal });
-        if (rWal.ok) {
-          const jWal = (await rWal.json()) as { ok?: boolean; wallets?: Record<string, number> };
-          if (jWal?.wallets) setWal(jWal.wallets);
+      const uWal = new URL("/api/providers/binance/wallet", window.location.origin);
+      uWal.searchParams.set("t", String(Date.now()));
+      const rWal = await fetch(uWal, { cache: "no-store", signal: ac.signal });
+      if (rWal.ok) {
+        const jWal = (await rWal.json()) as { ok?: boolean; wallets?: Record<string, number> };
+        if (jWal?.wallets) {
+          const up: Record<string, number> = {};
+          for (const [k, v] of Object.entries(jWal.wallets)) {
+            const K = String(k || "").toUpperCase();
+            const n = Number(v);
+            up[K] = Number.isFinite(n) ? n : 0;
+          }
+          setWal(up);
         }
-      } catch {}
+      }
+    } catch {}
 
       // str-aux/bins (hist)
       const sym = `${B}${Q}`;
@@ -124,6 +133,7 @@ export default function AssetsIdentity({
       u2.searchParams.set("window", "30m");
       u2.searchParams.set("bins", "128");
       u2.searchParams.set("sessionId", "dyn");
+      u2.searchParams.set("t", String(Date.now()));
       const r2 = await fetch(u2, { cache: "no-store", signal: ac.signal });
       if (r2.ok) {
         const j2 = (await r2.json()) as StrBinsResp;
@@ -143,14 +153,12 @@ export default function AssetsIdentity({
   }, [B, Q]);
 
   useEffect(() => {
-    fetchAll();
-    const unsub = subscribe((ev) => {
-      if (ev.type === "tick40" || ev.type === "tick120" || ev.type === "refresh") {
-        fetchAll();
-      }
-    });
-    return () => { unsub(); abortRef.current?.abort(); };
-  }, [fetchAll]);
+  fetchAll();
+  const unsub = subscribe((ev) => {
+    if (ev.type === "tick40" || ev.type === "refresh") fetchAll();
+  });
+  return () => { unsub(); abortRef.current?.abort(); };
+}, [fetchAll]);
 
   const since = useMemo(() => {
     if (!tstamp) return "—";

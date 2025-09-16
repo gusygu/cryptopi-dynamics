@@ -1,44 +1,44 @@
 // src/math/utils.ts
+// src/core/math/utils.ts  (or wherever your utils live; you sent "utils.ts")
+export function uniqUpper(list: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const t of list) {
+    const u = String(t || "").trim().toUpperCase();
+    if (!u) continue;
+    if (!seen.has(u)) { seen.add(u); out.push(u); }
+  }
+  return out;
+}
 
-export function newGrid<T = number | null>(n: number, fill: T): T[][] {
+export function newGrid<T>(n: number, fill: T): T[][] {
   return Array.from({ length: n }, () => Array(n).fill(fill));
 }
 
-/**
- * For "benchmark": fill inverses as 1/x (leave direct values untouched).
- * Diagonal stays null.
- */
-export function invertGrid(src: (number | null)[][]): (number | null)[][] {
-  const n = src.length;
+export function invertGrid(M: (number | null)[][]): (number | null)[][] {
+  const n = M.length;
   const out = newGrid<number | null>(n, null);
   for (let i = 0; i < n; i++) {
     for (let j = 0; j < n; j++) {
       if (i === j) continue;
-      const v = src[i][j];
-      if (v != null && Number.isFinite(v)) {
-        out[i][j] = v;
-        if (src[j][i] == null) out[j][i] = 1 / v;
-      }
+      const v = M[i]?.[j] ?? null;
+      out[j][i] = (v != null && v !== 0) ? (1 / v) : null;
     }
   }
   return out;
 }
 
-/**
- * For antisymmetric metrics ("pct24h", often "delta"): fill missing as -x.
- * Diagonal stays null.
- */
-export function antisymmetrize(src: (number | null)[][]): (number | null)[][] {
-  const n = src.length;
+export function antisymmetrize(M: (number | null)[][]): (number | null)[][] {
+  const n = M.length;
   const out = newGrid<number | null>(n, null);
   for (let i = 0; i < n; i++) {
     for (let j = 0; j < n; j++) {
       if (i === j) continue;
-      const v = src[i][j];
-      if (v != null && Number.isFinite(v)) {
-        out[i][j] = v;
-        if (src[j][i] == null) out[j][i] = -v;
-      }
+      const a = M[i]?.[j];
+      const b = M[j]?.[i];
+      if (a != null && Number.isFinite(a)) out[i][j] = a;
+      else if (b != null && Number.isFinite(b)) out[i][j] = -b;
+      else out[i][j] = null;
     }
   }
   return out;

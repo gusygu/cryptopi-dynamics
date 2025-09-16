@@ -1,205 +1,142 @@
-// src/app/api/mea-aux/route.ts
+// app/api/mea-aux/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { buildMeaAux } from "@/auxiliary/mea_aux/buildMeaAux";
 import type { IdPctGrid } from "@/auxiliary/mea_aux/buildMeaAux";
-import { getAccountBalances } from "@/sources/binanceAccount";
+import { getAccountBalances } from "../../../sources/binanceAccount";
 import { getPool } from "@/db/pool";
-import { getAll as getSettings } from "@/lib/settings/server";
 
 export const dynamic = "force-dynamic";
 
-/* -------------------- optional provider delegation -------------------- */
-/** If a non-HTTP provider exists in the gateway, use it (avoids recursion).
- *  Implement later in: src/lib/dynamics.gateway.server.ts
- *  export async function getMeaAuxProvider(args:{ coins:string[], k:number, Ca?:string, Cb?:string }): Promise<{ok:true;coins:string[];k:number;grid:any;tierLabel?:string}>
- */
-async function tryGatewayProvider(args: { coins: string[]; k: number; Ca?: string; Cb?: string }) {
-  try {
-    const gw = await import("@/lib/dynamics.gateway.server");
-    // look specifically for the non-HTTP provider to avoid calling this same route
-    const fn = (gw as any)?.getMeaAuxProvider as
-      | ((a: { coins: string[]; k: number; Ca?: string; Cb?: string }) => Promise<any>)
-      | undefined;
-    if (typeof fn === "function") {
-      const payload = await fn(args);
-      if (payload && typeof payload === "object") return payload;
-    }
-  } catch {
-    /* noop → fall back to local logic */
-  }
-  return null;
-}
-
-/* ------------------------- helpers ------------------------- */
-
-function normCoin(s: string) { return String(s || "").trim().toUpperCase(); }
+// --- utils ---
 function parseCoins(qs: URLSearchParams): string[] | null {
   const raw = qs.get("coins");
   if (!raw) return null;
-  const seen = new Set<string>(); const out: string[] = [];
-  for (const s of raw.split(",")) { const u = normCoin(s); if (!u || seen.has(u)) continue; seen.add(u); out.push(u); }
-  return out.length ? out : null;
+  return raw.split(",").map(s => s.trim()).filter(Boolean);
 }
-function clampK(k: number | undefined, coinsN: number) {
-  const max = Math.max(1, coinsN - 1);
-  if (!Number.isFinite(k as number)) return max;
-  const v = Math.floor(k as number);
-  return Math.min(max, Math.max(1, v));
-}
+function coinsKey(arr: string[]) { return arr.join(","); }
 
-// Avoid dynamic import with expression; prefer literal with try/catch.
+const RATE_WINDOW_MS_DEFAULT = Number(process.env.MEA_RATE_WINDOW_MS ?? 10_000); // 10s
+const RATE_MAX_DEFAULT       = Number(process.env.MEA_RATE_MAX ?? 4);           // 4 hits/window
+const TTL_MS_DEFAULT         = Number(process.env.MEA_CACHE_TTL_MS ?? 40_000);  // 40s
 
-// quick counter of finite values in id_pct grid
-function countFinite(grid: IdPctGrid): number {
-  let c = 0;
-  for (const b of Object.keys(grid)) {
-    const row = grid[b] ?? {};
-    for (const q of Object.keys(row)) {
-      const v = row[q];
-      if (v != null && Number.isFinite(Number(v))) c++;
-    }
-  }
-  return c;
-}
-
-/* --------------------- cache / de-dupe layer --------------------- */
-type CacheEntry<T> = { at: number; data: T };
-type InFlight<T> = Promise<T> | null;
-const TTL_MS = Number(process.env.MEA_CACHE_TTL_MS ?? 40_000);
+const rateHits = new Map<string, number[]>(); // ip -> timestamps
 const cache = {
-  idp: new Map<string, CacheEntry<IdPctGrid>>(),
-  wal: new Map<string, CacheEntry<Record<string, number>>>(),
+  idp: new Map<string, { at: number; data: IdPctGrid }>(),           // key: coinsKey
+  wal: new Map<string, { at: number; data: Record<string, number> }>()// key: coinsKey
 };
 const inflight = {
-  idp: new Map<string, InFlight<IdPctGrid>>(),
-  wal: new Map<string, InFlight<Record<string, number>>>(),
+  idp: new Map<string, Promise<IdPctGrid>>(),
+  wal: new Map<string, Promise<Record<string, number>>>(),
 };
 
-/* ------------------------------- GET ------------------------------- */
+function rateKey(req: NextRequest) {
+  const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "local";
+  return ip;
+}
 
+async function fetchLatestIdPct(pool: ReturnType<typeof getPool>, coins: string[]): Promise<IdPctGrid> {
+  const tsRes = await pool.query(
+    `SELECT MAX(ts_ms) AS ts FROM dyn_matrix_values WHERE matrix_type='id_pct'`
+  );
+  const latest = Number(tsRes.rows?.[0]?.ts ?? 0);
+  const out: IdPctGrid = {};
+  for (const c of coins) out[c] = {};
+  if (!latest) return out;
+
+  const rows = await pool.query(
+    `SELECT base, quote, value
+     FROM dyn_matrix_values
+     WHERE matrix_type='id_pct' AND ts_ms=$1`,
+    [latest]
+  );
+  for (const r of rows.rows) {
+    const b = r.base as string, q = r.quote as string, v = Number(r.value);
+    if (!out[b]) out[b] = {};
+    out[b][q] = Number.isFinite(v) ? v : null;
+  }
+  return out;
+}
+
+// --- handler ---
 export async function GET(req: NextRequest) {
   const qs = req.nextUrl.searchParams;
 
-  // coins: prefer query, else Settings.coinUniverse, else env COINS
-  const coinsFromQuery = parseCoins(qs);
-  const settings = await getSettings();
-  const coinsFromSettings = (settings.coinUniverse ?? []).map(normCoin).filter(Boolean);
-  const coins =
-    coinsFromQuery ??
-    (coinsFromSettings.length ? coinsFromSettings
-      : (process.env.COINS ?? "BTC,ETH,USDT").split(",").map(normCoin).filter(Boolean));
-
-  if (coins.length < 2) {
-    return NextResponse.json({ ok: false, error: "need_at_least_two_coins", coins }, { status: 400 });
-  }
-
+  // settings-driven inputs
+  const coins = parseCoins(qs) ?? (process.env.COINS ?? "BTC,ETH,USDT")
+    .split(",").map(s => s.trim()).filter(Boolean);
   const kParam = Number(qs.get("k") ?? NaN);
-  const kEff = clampK(Number.isFinite(kParam) ? kParam : undefined, coins.length);
+  const targetK = Number.isFinite(kParam) && kParam > 0 ? Math.floor(kParam) : undefined;
 
-  // Optional tier pair (kept for both provider & local paths)
-  const Ca = (qs.get("Ca") || "").toUpperCase() || undefined;
-  const Cb = (qs.get("Cb") || "").toUpperCase() || undefined;
+  // timing/limits overrides (all optional)
+  const overrideTTL = Number(qs.get("ttlMs") ?? NaN);
+  const overrideRateWin = Number(qs.get("rateWindowMs") ?? NaN);
+  const overrideRateMax = Number(qs.get("rateMax") ?? NaN);
+  const loopMs = Number(qs.get("loopMs") ?? NaN) || undefined;
+  const sessionStamp = qs.get("sessionStamp") || undefined;
 
-  // 0) Try server gateway provider (non-HTTP) if present
-  const providerPayload = await tryGatewayProvider({ coins, k: kEff, Ca, Cb });
-  if (providerPayload) {
-    return NextResponse.json(providerPayload, { headers: { "Cache-Control": "no-store" }, status: 200 });
-  }
+  const TTL_MS = Number.isFinite(overrideTTL) ? overrideTTL : TTL_MS_DEFAULT;
+  const RATE_WINDOW_MS = Number.isFinite(overrideRateWin) ? overrideRateWin : RATE_WINDOW_MS_DEFAULT;
+  const RATE_MAX       = Number.isFinite(overrideRateMax) ? overrideRateMax : RATE_MAX_DEFAULT;
 
+  // lightweight per-request rate check
+  const now = Date.now();
+  const ipKey = rateKey(req);
+  const hits = (rateHits.get(ipKey) ?? []).filter(t => now - t < RATE_WINDOW_MS);
+  hits.push(now);
+  rateHits.set(ipKey, hits);
+  const isLimited = RATE_MAX > 0 && RATE_WINDOW_MS > 0 && hits.length > RATE_MAX;
+
+  const warn: string[] = [];
   const pool = getPool();
-  const keyCoins = coins.join(",");
 
-  // -------- id_pct (DB → fallback to matrices/latest) --------
+  // -------- id_pct with cache + de-dupe --------
+  const keyCoins = coinsKey(coins);
   let idPct: IdPctGrid = {};
   try {
     const ent = cache.idp.get(keyCoins);
-    const now = Date.now();
     if (ent && now - ent.at < TTL_MS) {
       idPct = ent.data;
     } else {
       let p = inflight.idp.get(keyCoins);
       if (!p) {
+        if (isLimited) {
+          return NextResponse.json(
+            { ok: false, error: "rate_limited: try again shortly (warming cache)" },
+            { status: 429, headers: { "Retry-After": String(Math.ceil(RATE_WINDOW_MS / 1000)) } }
+          );
+        }
         p = (async () => {
-          // 1) try DB: compute from latest two benchmark snapshots
-          const out: IdPctGrid = {};
-          for (const c of coins) out[c] = {};
-          try {
-            const tsRes = await pool.query(
-              `SELECT DISTINCT ts_ms FROM dyn_matrix_values WHERE matrix_type='benchmark' ORDER BY ts_ms DESC LIMIT 2`
-            );
-            const stamps: number[] = tsRes.rows.map((r: any) => Number(r.ts_ms ?? r.ts)).filter(Number.isFinite);
-            if (stamps.length >= 2) {
-              const [latest, previous] = [stamps[0], stamps[1]];
-              const rows = await pool.query(
-                `SELECT base, quote, value, ts_ms FROM dyn_matrix_values WHERE matrix_type='benchmark' AND ts_ms IN ($1,$2)`,
-                [latest, previous]
-              );
-              const newer = new Map<string, number>();
-              const older = new Map<string, number>();
-              const key = (b: string, q: string) => `${normCoin(b)}|${normCoin(q)}`;
-              for (const r of rows.rows) {
-                const k = key(r.base, r.quote);
-                const v = Number(r.value);
-                if (!Number.isFinite(v)) continue;
-                if (Number(r.ts_ms) === latest) newer.set(k, v);
-                else older.set(k, v);
-              }
-              for (const b of coins) for (const q of coins) {
-                if (b === q) { out[b][q] = null; continue; }
-                const k = `${b}|${q}`, nv = newer.get(k), ov = older.get(k);
-                out[b][q] = (nv != null && ov != null && ov !== 0) ? (nv - ov) / ov : null;
-              }
-            }
-          } catch { /* ignore DB path */ }
-
-          // 2) fallback: call /api/matrices/latest if DB path had no data
-          if (countFinite(out) === 0) {
-            try {
-              const origin = req.nextUrl.origin;
-              const u = new URL("/api/matrices/latest", origin);
-              u.searchParams.set("coins", coins.join(","));
-              const r = await fetch(u.toString(), { cache: "no-store" });
-              const j = await r.json();
-              const m: number[][] | null = j?.matrices?.id_pct ?? null;
-              if (Array.isArray(m)) {
-                for (let i = 0; i < coins.length; i++) {
-                  const b = coins[i];
-                  out[b] = out[b] || {};
-                  for (let j2 = 0; j2 < coins.length; j2++) {
-                    const q = coins[j2];
-                    out[b][q] = (i === j2) ? null : (Number.isFinite(m?.[i]?.[j2]) ? Number(m[i][j2]) : null);
-                  }
-                }
-              }
-            } catch { /* ignore fetch path */ }
-          }
-
-          cache.idp.set(keyCoins, { at: Date.now(), data: out });
-          return out;
+          const res = await fetchLatestIdPct(pool, coins);
+          cache.idp.set(keyCoins, { at: Date.now(), data: res });
+          return res;
         })();
         inflight.idp.set(keyCoins, p);
       }
       idPct = await p;
       inflight.idp.delete(keyCoins);
     }
-  } catch {
-    idPct = {};
-    for (const c of coins) idPct[c] = {};
+  } catch (e: any) {
+    warn.push(`id_pct load failed: ${e?.message ?? e}`);
   }
 
-  // -------- wallet (cache + de-dupe) --------
+  // -------- wallet with cache + de-dupe --------
   let balances: Record<string, number> = {};
   try {
     const ent = cache.wal.get(keyCoins);
-    const now = Date.now();
     if (ent && now - ent.at < TTL_MS) {
       balances = ent.data;
     } else {
       let p = inflight.wal.get(keyCoins);
       if (!p) {
+        if (isLimited) {
+          return NextResponse.json(
+            { ok: false, error: "rate_limited: try again shortly (wallet)" },
+            { status: 429, headers: { "Retry-After": String(Math.ceil(RATE_WINDOW_MS / 1000)) } }
+          );
+        }
         p = (async () => {
-          const raw = await getAccountBalances();
-          const data = Object.fromEntries(coins.map((c) => [c, Number(raw[c] ?? 0)]));
+          const raw = await getAccountBalances(); // live hit
+          const data = Object.fromEntries(coins.map(c => [c, Number(raw[c] ?? 0)]));
           cache.wal.set(keyCoins, { at: Date.now(), data });
           return data;
         })();
@@ -208,42 +145,30 @@ export async function GET(req: NextRequest) {
       balances = await p;
       inflight.wal.delete(keyCoins);
     }
-  } catch {}
-
-  // -------- build MEA grid --------
-  let grid: ReturnType<typeof buildMeaAux>;
-  try {
-    grid = buildMeaAux({ coins, idPct, balances, k: kEff });
-  } catch (err: any) {
-    const safeK = Math.max(1, coins.length - 1);
-    if (safeK !== kEff) {
-      try {
-        grid = buildMeaAux({ coins, idPct, balances, k: safeK });
-      } catch (err2: any) {
-        return NextResponse.json({ ok: false, error: String(err2?.message ?? err2) }, { status: 500 });
-      }
-    } else {
-      return NextResponse.json({ ok: false, error: String(err?.message ?? err) }, { status: 500 });
+    if (Object.values(balances).every(v => v === 0)) {
+      warn.push("Wallet fetch ok, but zero balances for the selected coins.");
     }
-  }
-  let tiers: any = null;
-  try { tiers = await import("@/auxiliary/mea_aux/tiers"); } catch {}
-
-  // Optional tier label for a specific Ca/Cb
-  let tierLabel: string | undefined;
-  if (Ca && Cb && Array.isArray((grid as any)?.weights)) {
-    const idx = Object.fromEntries(coins.map((c, i) => [c, i]));
-    const i = idx[Ca], j = idx[Cb];
-    const w = Number((grid as any).weights?.[i]?.[j]);
-    if (Number.isFinite(w)) {
-      tierLabel = typeof tiers?.getTier === "function"
-        ? tiers.getTier(w)
-        : (w >= 1.10 ? "α-tier" : w >= 1.02 ? "β-tier" : w > 0.99 ? "γ-tier" : "δ-tier");
-    }
+  } catch (e: any) {
+    warn.push(`wallet fetch failed: ${e?.message ?? e}`);
   }
 
-  return NextResponse.json(
-    { ok: true, coins, k: kEff, grid, ...(tierLabel ? { tierLabel } : {}) },
-    { headers: { "Cache-Control": "no-store" } }
-  );
+  // -------- build output grid --------
+  const grid = buildMeaAux({ coins, idPct, balances, k: targetK });
+
+  const payload = {
+    ok: true,
+    coins,
+    k: targetK ?? (coins.length - 1),
+    grid,
+    meta: {
+      warnings: warn,
+      loopMs,
+      sessionStamp,
+      ttlMs: TTL_MS,
+      rateWindowMs: RATE_WINDOW_MS,
+      rateMax: RATE_MAX
+    }
+  };
+
+  return NextResponse.json(payload, { headers: { "Cache-Control": "no-store" } });
 }

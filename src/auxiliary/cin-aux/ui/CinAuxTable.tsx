@@ -30,7 +30,7 @@ function usd(n: number | null | undefined, d = 2) {
 export default function CinAuxTable({
   title = 'CIN-AUX',
   clusterCoins = [],
-  autoRefreshMs = 45_000,
+  autoRefreshMs = 45_000, // not strictly needed—refresh follows poller ticks
 }: {
   title?: string;
   clusterCoins?: string[];

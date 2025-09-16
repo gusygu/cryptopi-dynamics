@@ -17,7 +17,7 @@ export default function StreamsTable({
   };
 }) {
   const rows: Array<[string, { prev?: number; cur?: number; greatest?: number }, '%' | '' ]> = [
-    ['benchmark', streams?.benchmark ?? {}, ''],   // 👈 price, no unit
+    ['benchmark', streams?.benchmark ?? {}, ''],   // price
     ['pct24h',    streams?.pct24h    ?? {}, '%'],
     ['pct_drv',   streams?.pct_drv   ?? {}, '%'],
   ];

@@ -13,6 +13,12 @@ function prettyPct(n: number | undefined | null, digits = 2) {
   const v = Number(n);
   return Math.abs(v) >= 1e-6 ? v.toFixed(digits) : v.toExponential(2);
 }
+const hhmm = (hms?: string | null) => {
+  if (!hms) return '—';
+  // expects "hh:mm:ss" → show "hh:mm"
+  const parts = String(hms).split(':');
+  return parts.length >= 2 ? `${parts[0]}:${parts[1]}` : hms;
+};
 
 type Nucleus = { binIndex: number };
 type FM = {
@@ -36,10 +42,18 @@ type Shifts =
   | number
   | undefined;
 
-// NEW: cards contract from the API
 type Cards = {
   opening?: { benchmark?: number; pct24h?: number };
   live?: { benchmark?: number; pct24h?: number; pct_drv?: number };
+};
+
+type Overlay = {
+  shift_stamp?: boolean;
+  shift_n?: number;
+  shift_hms?: string;      // "hh:mm:ss"
+  swap_n?: number;
+  swap_sign?: 'ascending' | 'descending' | null;
+  swap_hms?: string;       // "hh:mm:ss"
 };
 
 type CoinOut = {
@@ -51,16 +65,16 @@ type CoinOut = {
   sessionStats?: { priceMin: number; priceMax: number; benchPctMin: number; benchPctMax: number };
   stats?: { minPrice: number; maxPrice: number };
   fm?: FM;
-  cards?: Cards;          // <-- NEW
+  cards?: Cards;
   swaps?: number;
   shifts?: Shifts;
   shiftsBlock?: Shifts;
   shiftsLegacy?: Shifts;
   gfmDelta?: { absPct?: number; anchorPrice?: number | null; price?: number | null };
-  shift_stamp?: boolean;
   streams?: Streams;
   hist?: { counts: number[] };
   lastUpdateTs?: number;
+  overlay?: Overlay;       // <-- NEW (server provides this)
   [k: string]: any;
 };
 
@@ -73,7 +87,7 @@ export default function CoinPanel({
   coin?: CoinOut | null;
   histogram?: React.ReactNode;
 }) {
-  // -------- epoch-gated freeze (adopt data only when uiEpoch changes) --------
+  // freeze by uiEpoch (adopt new snapshot only when epoch increments)
   const epoch = coin?.meta?.uiEpoch ?? 0;
   const lastEpochRef = React.useRef<number>(-1);
   const [frozen, setFrozen] = React.useState<CoinOut | null>(null);
@@ -86,12 +100,10 @@ export default function CoinPanel({
     }
   }, [coin, epoch]);
 
-  // Render snapshot for shift-sensitive tiles; keep delta/live from latest 'coin'
   const render = frozen ?? coin ?? undefined;
-
   const ok = !!render?.ok;
 
-  // Opening benchmark (snapshot) + caption with opening pct24h
+  // Opening benchmark + caption with opening pct24h
   const openingFallback = render?.opening ?? render?.openingSet?.benchmark;
   const openingBench = render?.cards?.opening?.benchmark ?? openingFallback;
   const openingPct = render?.cards?.opening?.pct24h;
@@ -106,13 +118,22 @@ export default function CoinPanel({
   const latestTs = (shiftsBag?.latestTs ?? coin?.lastUpdateTs) as number | undefined;
   const latest = latestTs ? new Date(latestTs).toLocaleTimeString() : '—';
 
-  // ------------------------------ GFM block ------------------------------
-  // Anchor (GFMr) is from frozen snapshot; GFMc only for debug/fallback
+  // Overlay (shift/swap with hms + sign)
+  const overlay = render?.overlay as Overlay | undefined;
+  const shiftNow = overlay?.shift_stamp === true;
+  const shiftN = overlay?.shift_n ?? shiftsCount ?? null;
+  const shiftHhmm = hhmm(overlay?.shift_hms);
+
+  const swapsN = (typeof render?.swaps === 'number') ? render.swaps : (overlay?.swap_n ?? null);
+  const swapSign = overlay?.swap_sign; // "ascending" | "descending" | null
+  const swapHhmm = hhmm(overlay?.swap_hms);
+  const swapArrow = swapSign === 'ascending' ? '↑' : swapSign === 'descending' ? '↓' : '';
+
+  // GFM block
   const gfmr = render?.fm?.gfm_ref_price ?? render?.fm?.gfm_price ?? null;
   const gfmc = coin?.fm?.gfm_calc_price ?? coin?.fm?.gfm_price ?? null;
   const gfmMain = gfmr ?? gfmc ?? null;
 
-  // Delta uses latest price vs anchor (so it keeps ticking without unfreezing)
   const anchorForDelta = gfmr ?? render?.gfmDelta?.anchorPrice ?? null;
   const livePrice = coin?.gfmDelta?.price ?? null;
   const deltaAbsPct = coin?.gfmDelta?.absPct ?? null;
@@ -126,8 +147,7 @@ export default function CoinPanel({
       </div>
     ) : null;
 
-  // ------------------------------ Live market card ------------------------------
-  // This one should tick each refresh → read from *coin* (latest), fallback to snapshot
+  // Live market card (ticks each refresh)
   const liveBench =
     coin?.cards?.live?.benchmark ??
     render?.cards?.live?.benchmark ??
@@ -142,14 +162,13 @@ export default function CoinPanel({
     render?.cards?.live?.pct_drv ??
     null;
 
-  // ------------------------------ Symbol label (BASE / QUOTE) -------------------
+  // BASE / QUOTE label
   const showSym = React.useMemo(() => {
     const U = String(symbol || '').toUpperCase();
-    const qs = ["USDT","BTC","ETH","BNB","FDUSD","BUSD","TUSD","USDC","TRY"];
+    const qs = ["USDT","BTC","ETH","BNB","FDUSD","BUSD","TUSD","USDC","TRY","EUR","BRL","GBP"];
     for (const q of qs) {
       if (U.endsWith(q) && U.length > q.length) return `${U.slice(0, U.length - q.length)} / ${q}`;
     }
-    // heuristic fallback (non-destructive)
     return U.length > 6 ? `${U.slice(0, 3)} / ${U.slice(3)}` : U;
   }, [symbol]);
 
@@ -168,9 +187,9 @@ export default function CoinPanel({
         <div className="flex items-center gap-2 text-xs text-[var(--muted)]">
           <span>epoch #{epoch}</span>
           <span>updated {latest}</span>
-          {coin?.shift_stamp ? (
+          {shiftNow ? (
             <span className="px-1.5 py-0.5 rounded-md bg-emerald-500/15 text-emerald-300 border border-emerald-400/30 font-medium">
-              SHIFT
+              SHIFT #{shiftN ?? '—'} @ {shiftHhmm}
             </span>
           ) : null}
         </div>
@@ -204,7 +223,7 @@ export default function CoinPanel({
             {histogram}
           </div>
 
-          {/* MIN/MAX + Shifts + Live market card */}
+          {/* MIN/MAX + Shifts/Swaps + Live market */}
           <div className="grid grid-cols-3 gap-3 mb-3">
             <Card title="MIN / MAX" subtitle="price (session)">
               <div className="text-sm grid grid-cols-2 gap-x-3">
@@ -215,12 +234,19 @@ export default function CoinPanel({
               </div>
             </Card>
 
-            <Card title="Shifts" subtitle="confirmed K-cycles">
+            <Card title="Shifts / Swaps" subtitle="K-cycles · sign · hh:mm">
               <div className="text-sm grid grid-cols-2 gap-x-3">
-                <div className="text-[var(--muted)]">nShifts</div>
-                <div className="tabular-nums">{shiftsCount ?? '—'}</div>
+                <div className="text-[var(--muted)]">shifts</div>
+                <div className="tabular-nums">
+                  {shiftN ?? '—'} {shiftNow ? `@ ${shiftHhmm}` : ''}
+                </div>
+
                 <div className="text-[var(--muted)]">swaps</div>
-                <div className="tabular-nums">{render?.swaps ?? '—'}</div>
+                <div className="tabular-nums">
+                  {swapsN ?? '—'}{' '}
+                  {swapArrow ? `(${swapArrow} ${swapHhmm})` : ''}
+                </div>
+
                 <div className="text-[var(--muted)]">timelapse</div>
                 <div className="tabular-nums">
                   {typeof (shiftsBag as any)?.timelapseSec === 'number'
@@ -230,7 +256,6 @@ export default function CoinPanel({
               </div>
             </Card>
 
-            {/* NEW: live-market card (updates on every fetch) */}
             <Card title="Live market" subtitle="benchmark · pct24h · pct_drv">
               <div className="text-xs grid grid-cols-2 gap-x-3 leading-relaxed">
                 <div className="text-[var(--muted)]">benchmark</div>

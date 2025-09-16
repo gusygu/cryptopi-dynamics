@@ -1,0 +1,356 @@
+# Page snapshot
+
+```yaml
+- generic [active] [ref=e1]:
+  - button "Open Next.js Dev Tools" [ref=e7] [cursor=pointer]:
+    - img [ref=e8] [cursor=pointer]
+  - generic [ref=e11]:
+    - complementary [ref=e12]:
+      - generic [ref=e13]:
+        - navigation "Primary" [ref=e14]:
+          - list [ref=e15]:
+            - listitem [ref=e16]:
+              - link "Dashboard" [ref=e17] [cursor=pointer]:
+                - /url: /dynamics
+            - listitem [ref=e18]:
+              - link "Matrices" [ref=e19] [cursor=pointer]:
+                - /url: /matrices
+            - listitem [ref=e20]:
+              - link "Str-aux" [ref=e21] [cursor=pointer]:
+                - /url: /str-aux
+            - listitem [ref=e22]:
+              - link "Settings" [ref=e23] [cursor=pointer]:
+                - /url: /settings
+            - listitem [ref=e24]:
+              - link "Intro" [ref=e25] [cursor=pointer]:
+                - /url: /intro
+        - generic [ref=e26]:
+          - 'button "Auto: ON" [pressed] [ref=e27]'
+          - button "Refresh" [ref=e28]
+          - button "Clocks" [ref=e29]
+          - 'button "Metronome: ON" [pressed] [ref=e30]'
+        - generic [ref=e31]:
+          - generic [ref=e32]:
+            - generic [ref=e33]: Phase
+            - code [ref=e34]: "1"
+            - generic [ref=e35]: 40s
+            - code [ref=e36]: "13"
+            - generic [ref=e37]: 120s
+            - code [ref=e38]: "93"
+          - generic [ref=e39]: auto:ON
+          - generic [ref=e40]: db:-
+          - generic [ref=e41]: P:L 40/120
+    - main [ref=e42]:
+      - generic [ref=e43]:
+        - generic [ref=e45]:
+          - generic [ref=e46]:
+            - generic [ref=e47]:
+              - heading "Dynamics - MEA Matrix" [level=3] [ref=e48]
+              - generic [ref=e49]:
+                - generic [ref=e50]: "amber: neutral (0.000000)"
+                - generic [ref=e51]: "green: > 0"
+                - generic [ref=e52]: "red: < 0"
+                - generic [ref=e53]: USDT-bridged
+                - generic [ref=e54]: preview available
+                - generic [ref=e55]: preview unavailable
+                - generic [ref=e56]: selected pair
+            - generic [ref=e57]:
+              - generic [ref=e58]:
+                - text: "Selected:"
+                - generic [ref=e59]: BTC/ETH
+              - button "Refresh" [ref=e60]
+          - generic [ref=e62]: No data.
+        - generic [ref=e64]:
+          - generic [ref=e65]:
+            - generic [ref=e66]:
+              - generic [ref=e67]:
+                - generic [ref=e68]: BTC
+                - generic [ref=e69]: /
+                - generic [ref=e70]: ETH
+              - generic [ref=e71]:
+                - generic [ref=e72]: benchm
+                - generic [ref=e73]: "25.1383"
+              - generic [ref=e74]:
+                - generic [ref=e75]: id_pct
+                - generic [ref=e76]: "-0.000251"
+              - generic [ref=e77]:
+                - generic [ref=e78]: pct24h
+                - generic [ref=e79]: 0.0231%
+            - generic [ref=e80]:
+              - generic [ref=e81]: updated 0s ago
+              - button "Refresh" [ref=e82]
+          - generic [ref=e83]:
+            - generic [ref=e84]:
+              - heading "USDT Bridges" [level=4] [ref=e85]
+              - generic [ref=e86]:
+                - generic "BTC/USDT not in preview" [ref=e87]:
+                  - generic [ref=e88]: BTC → USDT
+                  - generic [ref=e89]:
+                    - generic [ref=e90]:
+                      - generic [ref=e91]: benchm
+                      - generic: "110180.0000"
+                    - generic [ref=e92]:
+                      - generic [ref=e93]: id_pct
+                      - generic: "-0.000617"
+                - generic "ETH/USDT not in preview" [ref=e94]:
+                  - generic [ref=e95]: ETH → USDT
+                  - generic [ref=e96]:
+                    - generic [ref=e97]:
+                      - generic [ref=e98]: benchm
+                      - generic: "4382.2700"
+                    - generic [ref=e99]:
+                      - generic [ref=e100]: id_pct
+                      - generic: "-0.000709"
+              - generic [ref=e101]:
+                - generic "BTC/ETH not in preview" [ref=e102]:
+                  - generic [ref=e103]: BTC → ETH
+                  - generic [ref=e104]:
+                    - generic [ref=e105]:
+                      - generic [ref=e106]: benchm
+                      - generic: "25.1383"
+                    - generic [ref=e107]:
+                      - generic [ref=e108]: id_pct
+                      - generic: "-0.000251"
+                - generic "ETH/BTC not in preview" [ref=e109]:
+                  - generic [ref=e110]: ETH → BTC
+                  - generic [ref=e111]:
+                    - generic [ref=e112]:
+                      - generic [ref=e113]: benchm
+                      - generic: "0.0398"
+                    - generic [ref=e114]:
+                      - generic [ref=e115]: id_pct
+                      - generic: "0.000251"
+            - generic [ref=e116]:
+              - heading "Wallet" [level=4] [ref=e117]
+              - generic [ref=e118]:
+                - generic [ref=e120]:
+                  - generic [ref=e121]: BTC
+                  - generic [ref=e122]: "0.000001"
+                - generic [ref=e124]:
+                  - generic [ref=e125]: ETH
+                  - generic [ref=e126]: "0.000060"
+                - generic [ref=e128]:
+                  - generic [ref=e129]: USDT
+                  - generic [ref=e130]: "0.000000"
+            - generic [ref=e131]:
+              - heading "Histograms · BTC/ETH" [level=4] [ref=e132]
+              - generic [ref=e133]:
+                - generic [ref=e134]: No pct_drv series.
+                - generic [ref=e135]:
+                  - generic [ref=e138]: positive (up)
+                  - generic [ref=e141]: negative (down)
+                  - generic [ref=e144]: zero
+              - generic [ref=e145]: No histogram data.
+              - generic [ref=e149]: bin magnitude
+      - generic [ref=e150]:
+        - generic [ref=e152]:
+          - generic [ref=e153]:
+            - generic [ref=e154]:
+              - generic [ref=e155]: Auxiliaries
+              - generic [ref=e156]:
+                - combobox [ref=e157]:
+                  - option "BTC" [selected]
+                  - option "ETH"
+                  - option "BNB"
+                  - option "SOL"
+                  - option "ADA"
+                  - option "XRP"
+                  - option "PEPE"
+                  - option "USDT"
+                - generic [ref=e158]: /
+                - combobox [ref=e159]:
+                  - option "BTC"
+                  - option "ETH" [selected]
+                  - option "BNB"
+                  - option "SOL"
+                  - option "ADA"
+                  - option "XRP"
+                  - option "PEPE"
+                  - option "USDT"
+              - generic [ref=e160]: MEA k auto
+              - generic [ref=e161]:
+                - generic [ref=e162]: symbol
+                - code [ref=e163]: BTCETH
+            - generic [ref=e164]:
+              - button "Refresh MEA" [ref=e165]
+              - button "Refresh STR" [ref=e166]
+          - generic [ref=e167]:
+            - generic [ref=e169]: MEA — BTC/ETH
+            - generic [ref=e170]:
+              - generic [ref=e171]:
+                - generic [ref=e172]: Measure (MEA)
+                - generic [ref=e173]: "0.000000"
+              - generic [ref=e174]:
+                - generic [ref=e175]: Tier weight
+                - generic [ref=e176]: "0.000"
+              - generic [ref=e177]:
+                - generic [ref=e178]: Tier
+                - generic [ref=e179]: "-"
+          - generic [ref=e180]:
+            - generic [ref=e182]:
+              - text: STR — BTC/ETH
+              - generic [ref=e183]: preview ok
+            - generic [ref=e184]:
+              - generic [ref=e185]:
+                - generic [ref=e186]: GFM Δ%
+                - generic [ref=e187]: "0.000"
+              - generic [ref=e188]:
+                - generic [ref=e189]: vTendency
+                - generic [ref=e190]: "0.000000"
+              - generic [ref=e191]:
+                - generic [ref=e192]: Shifts
+                - generic [ref=e193]: "13"
+              - generic [ref=e194]:
+                - generic [ref=e195]: Swaps
+                - generic [ref=e196]: "13"
+        - generic [ref=e198]:
+          - generic [ref=e199]:
+            - generic [ref=e200]: Arbitrage paths · ETH ↔ BTC
+            - generic [ref=e201]:
+              - generic "BTC · 0.00" [ref=e202]:
+                - generic [ref=e203]: BTC
+                - generic [ref=e204]: "0.00"
+              - generic "ETH · 0.00" [ref=e205]:
+                - generic [ref=e206]: ETH
+                - generic [ref=e207]: "0.00"
+              - generic "BNB · 0.00" [ref=e208]:
+                - generic [ref=e209]: BNB
+                - generic [ref=e210]: "0.00"
+              - generic "SOL · 0.00" [ref=e211]:
+                - generic [ref=e212]: SOL
+                - generic [ref=e213]: "0.00"
+              - generic "ADA · 0.00" [ref=e214]:
+                - generic [ref=e215]: ADA
+                - generic [ref=e216]: "0.00"
+              - generic "XRP · 0.00" [ref=e217]:
+                - generic [ref=e218]: XRP
+                - generic [ref=e219]: "0.00"
+          - generic [ref=e220]:
+            - button "symbol" [ref=e221]:
+              - img [ref=e222]
+              - generic [ref=e225]: symbol
+            - button "id_pct" [ref=e226]:
+              - img [ref=e227]
+              - generic [ref=e230]: id_pct
+            - button "benchm" [ref=e231]:
+              - img [ref=e232]
+              - generic [ref=e235]: benchm
+          - table [ref=e236]:
+            - rowgroup [ref=e243]:
+              - row "CI ETH→CI CI→BTC BTC→CI Swaps" [ref=e244]:
+                - cell "CI" [ref=e245]
+                - cell "ETH→CI" [ref=e246]
+                - cell "CI→BTC" [ref=e247]
+                - cell "BTC→CI" [ref=e248]
+                - cell "Swaps" [ref=e249]
+            - rowgroup [ref=e250]:
+              - row "BNB — — — — — — 0 swaps" [ref=e251]:
+                - cell "BNB" [ref=e252]
+                - cell "— —" [ref=e253]:
+                  - generic [ref=e254]:
+                    - generic "id_pct" [ref=e255]: —
+                    - generic "benchmark" [ref=e256]: —
+                - cell "— —" [ref=e257]:
+                  - generic [ref=e258]:
+                    - generic "id_pct" [ref=e259]: —
+                    - generic "benchmark" [ref=e260]: —
+                - cell "— —" [ref=e261]:
+                  - generic [ref=e262]:
+                    - generic "id_pct" [ref=e263]: —
+                    - generic "benchmark" [ref=e264]: —
+                - cell "0 swaps" [ref=e265]:
+                  - generic [ref=e266]:
+                    - generic [ref=e267]: "0"
+                    - generic [ref=e268]: swaps
+              - row "SOL — — — — — — 0 swaps" [ref=e269]:
+                - cell "SOL" [ref=e270]
+                - cell "— —" [ref=e271]:
+                  - generic [ref=e272]:
+                    - generic "id_pct" [ref=e273]: —
+                    - generic "benchmark" [ref=e274]: —
+                - cell "— —" [ref=e275]:
+                  - generic [ref=e276]:
+                    - generic "id_pct" [ref=e277]: —
+                    - generic "benchmark" [ref=e278]: —
+                - cell "— —" [ref=e279]:
+                  - generic [ref=e280]:
+                    - generic "id_pct" [ref=e281]: —
+                    - generic "benchmark" [ref=e282]: —
+                - cell "0 swaps" [ref=e283]:
+                  - generic [ref=e284]:
+                    - generic [ref=e285]: "0"
+                    - generic [ref=e286]: swaps
+              - row "ADA — — — — — — 0 swaps" [ref=e287]:
+                - cell "ADA" [ref=e288]
+                - cell "— —" [ref=e289]:
+                  - generic [ref=e290]:
+                    - generic "id_pct" [ref=e291]: —
+                    - generic "benchmark" [ref=e292]: —
+                - cell "— —" [ref=e293]:
+                  - generic [ref=e294]:
+                    - generic "id_pct" [ref=e295]: —
+                    - generic "benchmark" [ref=e296]: —
+                - cell "— —" [ref=e297]:
+                  - generic [ref=e298]:
+                    - generic "id_pct" [ref=e299]: —
+                    - generic "benchmark" [ref=e300]: —
+                - cell "0 swaps" [ref=e301]:
+                  - generic [ref=e302]:
+                    - generic [ref=e303]: "0"
+                    - generic [ref=e304]: swaps
+              - row "XRP — — — — — — 0 swaps" [ref=e305]:
+                - cell "XRP" [ref=e306]
+                - cell "— —" [ref=e307]:
+                  - generic [ref=e308]:
+                    - generic "id_pct" [ref=e309]: —
+                    - generic "benchmark" [ref=e310]: —
+                - cell "— —" [ref=e311]:
+                  - generic [ref=e312]:
+                    - generic "id_pct" [ref=e313]: —
+                    - generic "benchmark" [ref=e314]: —
+                - cell "— —" [ref=e315]:
+                  - generic [ref=e316]:
+                    - generic "id_pct" [ref=e317]: —
+                    - generic "benchmark" [ref=e318]: —
+                - cell "0 swaps" [ref=e319]:
+                  - generic [ref=e320]:
+                    - generic [ref=e321]: "0"
+                    - generic [ref=e322]: swaps
+              - row "PEPE — — — — — — 0 swaps" [ref=e323]:
+                - cell "PEPE" [ref=e324]
+                - cell "— —" [ref=e325]:
+                  - generic [ref=e326]:
+                    - generic "id_pct" [ref=e327]: —
+                    - generic "benchmark" [ref=e328]: —
+                - cell "— —" [ref=e329]:
+                  - generic [ref=e330]:
+                    - generic "id_pct" [ref=e331]: —
+                    - generic "benchmark" [ref=e332]: —
+                - cell "— —" [ref=e333]:
+                  - generic [ref=e334]:
+                    - generic "id_pct" [ref=e335]: —
+                    - generic "benchmark" [ref=e336]: —
+                - cell "0 swaps" [ref=e337]:
+                  - generic [ref=e338]:
+                    - generic [ref=e339]: "0"
+                    - generic [ref=e340]: swaps
+              - row "USDT — — — — — — 0 swaps" [ref=e341]:
+                - cell "USDT" [ref=e342]
+                - cell "— —" [ref=e343]:
+                  - generic [ref=e344]:
+                    - generic "id_pct" [ref=e345]: —
+                    - generic "benchmark" [ref=e346]: —
+                - cell "— —" [ref=e347]:
+                  - generic [ref=e348]:
+                    - generic "id_pct" [ref=e349]: —
+                    - generic "benchmark" [ref=e350]: —
+                - cell "— —" [ref=e351]:
+                  - generic [ref=e352]:
+                    - generic "id_pct" [ref=e353]: —
+                    - generic "benchmark" [ref=e354]: —
+                - cell "0 swaps" [ref=e355]:
+                  - generic [ref=e356]:
+                    - generic [ref=e357]: "0"
+                    - generic [ref=e358]: swaps
+  - alert [ref=e359]
+```
