@@ -112,7 +112,7 @@ async function main() {
 
   // SETTINGS
   const s = await jget('/api/settings');
-  const coins = uniq(s?.json?.coinUniverse || s?.json?.settings?.coinUniverse || ['BTC','ETH','BNB','SOL','ADA','XRP','PEPE','USDT']);
+  const coins = uniq(s?.json?.coinUniverse || s?.json?.settings?.coinUniverse || ['BTC','ETH','BNB','SOL','ADA','DOGE','USDT','PEPE','BRL']);
   console.log('[coins]', coins.join(', '));
 
   // PREVIEW (try GET then POST fallback)

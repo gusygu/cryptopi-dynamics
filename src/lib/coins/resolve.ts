@@ -17,7 +17,7 @@ function normalize(list: string[] | undefined | null): string[] {
 
 function envFallback(): string[] {
   return normalize(
-    (process.env.NEXT_PUBLIC_COINS ?? process.env.COINS ?? "BTC,ETH,BNB,SOL,ADA,XRP,PEPE,USDT")
+    (process.env.NEXT_PUBLIC_COINS ?? process.env.COINS ?? "BTC,ETH,BNB,SOL,ADA,DOGE,USDT,PEPE,BRL")
       .split(",")
   );
 }

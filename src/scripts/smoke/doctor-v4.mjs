@@ -1,7 +1,10 @@
 // src/scripts/smoke/doctor-v4.mjs
 /* eslint-disable no-console */
+import { loadEnv } from "./_shared/env.mjs";
+loadEnv();
 const BASE = process.env.BASE_URL || "http://localhost:3000";
 const COINS_ENV = process.env.COINS ? process.env.COINS.split(",").map(s=>s.trim().toUpperCase()).filter(Boolean) : null;
+const DEF_COINS = ["BTC","ETH","BNB","SOL","ADA","DOGE","USDT","PEPE","BRL"];
 
 async function jget(path, init) {
   const r = await fetch(`${BASE}${path}`, init);
@@ -9,6 +12,18 @@ async function jget(path, init) {
   let j = null;
   try { j = JSON.parse(t); } catch {}
   return { status: r.status, ok: r.ok, json: j, text: t };
+}
+
+function normCoins(list) {
+  const set = new Set(); const out = [];
+  for (const item of list || []) {
+    const u = String(item || "").trim().toUpperCase();
+    if (!u || set.has(u)) continue;
+    set.add(u);
+    out.push(u);
+  }
+  if (!set.has("USDT")) out.push("USDT");
+  return out;
 }
 
 function countCells(m) {
@@ -35,12 +50,35 @@ function countCells(m) {
   return 0;
 }
 
-function pickCoins(settingsCoins) {
-  if (COINS_ENV?.length) return Array.from(new Set(COINS_ENV));
-  if (Array.isArray(settingsCoins) && settingsCoins.length) {
-    return Array.from(new Set(settingsCoins.map(s => String(s).toUpperCase())));
+async function resolveCoins() {
+  const settings = await jget("/api/settings");
+  if (settings.status === 200 && settings.json) {
+    const list =
+      (Array.isArray(settings.json?.coinUniverse) && settings.json.coinUniverse) ||
+      (Array.isArray(settings.json?.coins) && settings.json.coins) ||
+      [];
+    const fromSettings = normCoins(list);
+    if (fromSettings.length) return { coins: fromSettings, source: "/api/settings" };
   }
-  return ["BTC","ETH","BNB","SOL","ADA","XRP","PEPE","USDT"];
+
+  if (COINS_ENV?.length) {
+    const fromEnv = normCoins(COINS_ENV);
+    if (fromEnv.length) return { coins: fromEnv, source: "env:COINS" };
+  }
+
+  const latest = await jget("/api/matrices/latest");
+  if (latest.status === 200 && Array.isArray(latest.json?.coins)) {
+    const fromLatest = normCoins(latest.json.coins);
+    if (fromLatest.length) return { coins: fromLatest, source: "/api/matrices/latest" };
+  }
+
+  const head = await jget("/api/matrices/head");
+  if (head.status === 200 && Array.isArray(head.json?.coins)) {
+    const fromHead = normCoins(head.json.coins);
+    if (fromHead.length) return { coins: fromHead, source: "/api/matrices/head" };
+  }
+
+  return { coins: normCoins(DEF_COINS), source: "default" };
 }
 
 async function maybeDbCheck(ts) {
@@ -68,10 +106,8 @@ async function maybeDbCheck(ts) {
 (async function main() {
   console.log("── doctor: matrices + pipeline + latest (v4) ─────────────────────────");
 
-  // Settings
-  const settings = await jget("/api/settings");
-  const coins = pickCoins(settings.json?.coins);
-  console.log("[settings coins]", settings.status, coins.join(", "));
+  const { coins, source: coinSource } = await resolveCoins();
+  console.log("[coins]", coins.join(", "), `(source: ${coinSource})`);
 
   // Preview diagnostics
   const preview = await jget(`/api/preview/binance?coins=${encodeURIComponent(coins.join(","))}`);
@@ -134,3 +170,4 @@ async function maybeDbCheck(ts) {
   console.error(e);
   process.exit(2);
 });
+

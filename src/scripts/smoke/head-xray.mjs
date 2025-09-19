@@ -1,10 +1,14 @@
 #!/usr/bin/env node
 /* eslint-disable no-console */
 
+import { loadEnv } from "./_shared/env.mjs";
+loadEnv();
+
 // ---- env / constants ---------------------------------------------------------
 const BASE = process.env.BASE_URL || "http://localhost:3000";
 const DBURL = process.env.DATABASE_URL || "";
 const TYPES = ["benchmark", "delta", "pct24h", "id_pct", "pct_drv"];
+const DEF_COINS = ["BTC","ETH","BNB","SOL","ADA","DOGE","USDT","PEPE","BRL"];
 const SLEEP = ms => new Promise(r => setTimeout(r, ms));
 
 async function jget(path) {
@@ -39,15 +43,29 @@ function normCoins(arr) {
   return out;
 }
 
-async function getSettingsCoins() {
-  const { status, body } = await jget("/api/settings");
-  if (status !== 200 || !body) return normCoins(["BTC","ETH","BNB","SOL","ADA","XRP","PEPE","USDT"]);
-  const from =
-    (Array.isArray(body?.coinUniverse) && body.coinUniverse) ||
-    (Array.isArray(body?.coins) && body.coins) ||
-    [];
-  const coins = normCoins(from);
-  return coins.length ? coins : normCoins(["BTC","ETH","BNB","SOL","ADA","XRP","PEPE","USDT"]);
+async function resolveCoins() {
+  const settings = await jget("/api/settings");
+  if (settings.status === 200 && settings.body) {
+    const list =
+      (Array.isArray(settings.body?.coinUniverse) && settings.body.coinUniverse) ||
+      (Array.isArray(settings.body?.coins) && settings.body.coins) ||
+      [];
+    const fromSettings = normCoins(list);
+    if (fromSettings.length) return { coins: fromSettings, source: "/api/settings" };
+  }
+
+  if (process.env.COINS) {
+    const fromEnv = normCoins(process.env.COINS.split(","));
+    if (fromEnv.length) return { coins: fromEnv, source: "env:COINS" };
+  }
+
+  const head = await jget("/api/matrices/head");
+  if (head.status === 200 && Array.isArray(head.body?.coins)) {
+    const fromHead = normCoins(head.body.coins);
+    if (fromHead.length) return { coins: fromHead, source: "/api/matrices/head" };
+  }
+
+  return { coins: normCoins(DEF_COINS), source: "default" };
 }
 
 function qsCoins(coins) {
@@ -139,8 +157,8 @@ function cmpRows(headRows, dbRows) {
 // ---- main -------------------------------------------------------------------
 (async () => {
   console.log("── head-xray: settings → preview → pipeline → head/latest → DB ──");
-  const coins = await getSettingsCoins();
-  console.log("[coins]", coins.join(", "));
+  const { coins, source: coinSource } = await resolveCoins();
+  console.log("[coins]", coins.join(", "), `(source: ${coinSource})`);
 
   // preview
   const pv = await jget(`/api/preview/binance${qsCoins(coins)}`);
@@ -227,3 +245,4 @@ function cmpRows(headRows, dbRows) {
   console.error(e);
   process.exit(2);
 });
+

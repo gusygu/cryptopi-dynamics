@@ -61,7 +61,7 @@ function normCoins(list?: string[]) {
 export async function getSettingsCoins(): Promise<string[]> {
   const s = await getSettings();
   const from = normCoins(s.coinUniverse?.length ? s.coinUniverse : []);
-  return from.length ? from : normCoins(["BTC","ETH","BNB","SOL","ADA","XRP","PEPE","USDT"]);
+  return from.length ? from : normCoins(["BTC","ETH","BNB","SOL","ADA","DOGE","USDT","PEPE","BRL"]);
 }
 
 export function usdtSymbolsFor(coins: string[]) {

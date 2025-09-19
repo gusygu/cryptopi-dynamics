@@ -7,7 +7,7 @@ const MAX_AGE = 60 * 60 * 24 * 365;
 const COOKIE = "appSettings";
 // /src/app/api/settings/route.ts
 function coinsFromEnv() {
-  const raw = process.env.NEXT_PUBLIC_COINS ?? "BTC,ETH,BNB,SOL,ADA,XRP,PEPE,USDT";
+  const raw = process.env.NEXT_PUBLIC_COINS ?? "BTC,ETH,BNB,SOL,ADA,DOGE,USDT,PEPE,BRL";
   return raw.split(",").map(s => s.trim().toUpperCase()).filter(Boolean);
 }
 

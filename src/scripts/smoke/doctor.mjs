@@ -4,7 +4,7 @@
 // - Honors BASE_URL and COINS envs; otherwise queries /api/settings for coinUniverse.
 
 const BASE = process.env.BASE_URL || "http://localhost:3000";
-const DEF_COINS = ["BTC","ETH","BNB","SOL","ADA","XRP","PEPE","USDT"];
+const DEF_COINS = ["BTC","ETH","BNB","SOL","ADA","DOGE","USDT","PEPE","BRL"];
 
 const nowMs = () => Date.now();
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -222,3 +222,4 @@ async function run() {
 }
 
 run().catch(e => { console.error("doctor crash:", e); process.exitCode = 1; });
+

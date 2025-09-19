@@ -6,7 +6,8 @@ import {
   type MatrixType,
 } from "@/core/db";
 
-export const dynamic = "force-dynamic";
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
 
 const TYPES: MatrixType[] = ["benchmark", "delta", "pct24h", "id_pct", "pct_drv"];
 
@@ -24,7 +25,7 @@ export async function GET(req: NextRequest) {
     const defCoins: string[] =
       Array.isArray((settings as any)?.coinUniverse) && (settings as any).coinUniverse.length
         ? (settings as any).coinUniverse.map((c: any) => String(c).toUpperCase())
-        : ["BTC","ETH","BNB","SOL","ADA","XRP","PEPE","USDT"];
+        : ["BTC","ETH","BNB","SOL","ADA","DOGE","USDT","PEPE","BRL"];
 
     const coins = parseCoins(req, defCoins);
 

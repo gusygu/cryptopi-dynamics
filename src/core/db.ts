@@ -122,7 +122,7 @@ export async function getPrevSnapshotByType(
   t: MatrixType,
   ts_ms: number,
   coins: string[]
-): Promise<Array<{ base: string; quote: string; value: number }>> {
+): Promise<{ ts: number | null; rows: Array<{ base: string; quote: string; value: number }> }> {
   const { rows: r1 } = await pool.query(
     `SELECT MAX(ts_ms) AS ts
        FROM ${TABLE}
@@ -131,7 +131,7 @@ export async function getPrevSnapshotByType(
     [t, ts_ms]
   );
   const prevTs = r1?.[0]?.ts;
-  if (prevTs == null) return [];
+  if (prevTs == null) return { ts: null, rows: [] };
   const U = coins.map(c => c.toUpperCase());
   const { rows } = await pool.query(
     `SELECT base, quote, value
@@ -142,5 +142,5 @@ export async function getPrevSnapshotByType(
         AND UPPER(quote) = ANY($3)`,
     [t, Number(prevTs), U]
   );
-  return rows as Array<{ base: string; quote: string; value: number }>;
+  return { ts: Number(prevTs), rows: rows as Array<{ base: string; quote: string; value: number }> };
 }

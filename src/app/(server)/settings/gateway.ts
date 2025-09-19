@@ -25,7 +25,7 @@ export async function loadSettings(): Promise<z.infer<typeof SettingsSchema>> {
 
   // temporary fallback to avoid breaks
   if (!current) current = SettingsSchema.parse({
-    universe: ["BTC","ETH","BNB","SOL","ADA","XRP","PEPE","DOGE","USDT"],
+    universe: ["BTC","ETH","BNB","SOL","ADA","DOGE","USDT","PEPE","BRL"],
     quote: "USDT",
     timing: { autoRefresh: true, autoRefreshMs: 45_000, secondaryEnabled: true, secondaryCycles: 3,
       strCycles: { m30: 60, h1: 60, h3: 60 } }

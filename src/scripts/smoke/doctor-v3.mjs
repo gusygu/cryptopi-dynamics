@@ -3,7 +3,7 @@
 import pg from "pg";
 
 const BASE = process.env.BASE_URL || "http://localhost:3000";
-const COINS = (process.env.COINS || "BTC,ETH,BNB,SOL,ADA,XRP,PEPE,USDT")
+const COINS = (process.env.COINS || "BTC,ETH,BNB,SOL,ADA,DOGE,USDT,PEPE,BRL")
   .split(",").map(s => s.trim().toUpperCase()).filter(Boolean);
 
 /** ───────── HTTP helpers ───────── */

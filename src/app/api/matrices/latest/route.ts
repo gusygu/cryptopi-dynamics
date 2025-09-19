@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { resolveCoinsFromSettings } from "@/lib/settings/server";
 import { buildLatestPayload } from "@/core/matricesLatest";
+import { loadMatricesContext, parseCoinsParam } from "@/core/matrices/context";
+import { fetchPreviewSymbolSet } from "@/core/matrices/preview";
 import type { MatrixType } from "@/core/db";
 
 export const dynamic = "force-dynamic";
@@ -8,116 +9,55 @@ export const runtime = "nodejs";
 export const revalidate = 0;
 
 const TYPES: MatrixType[] = ["benchmark", "delta", "pct24h", "id_pct", "pct_drv"];
-const DEFAULT_COINS = ["BTC", "ETH", "BNB", "SOL", "ADA", "XRP", "PEPE", "USDT"];
 
-function uniqUpper(list: Iterable<string>): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const item of list) {
-    const up = String(item || "").trim().toUpperCase();
-    if (!up || seen.has(up)) continue;
-    seen.add(up);
-    out.push(up);
-  }
-  return out;
-}
-
-function parseCoins(params: URLSearchParams, fallback: string[]): string[] {
+function coinsFromQuery(params?: URLSearchParams): string[] | undefined {
+  if (!params) return;
   const raw = params.get("coins");
-  if (!raw) return fallback;
-  const parsed = uniqUpper(raw.split(","));
-  return parsed.length ? parsed : fallback;
-}
-
-function countGridCells(grid: unknown): number {
-  if (!Array.isArray(grid)) return 0;
-  let n = 0;
-  for (const row of grid) {
-    if (!Array.isArray(row)) continue;
-    for (const cell of row) {
-      if (cell != null) n += 1;
-    }
-  }
-  return n;
-}
-
-function toRingsMap(
-  coins: string[],
-  previewGrid: number[][] | undefined | null
-): Record<string, Record<string, "direct" | "inverse" | "none">> {
-  if (!Array.isArray(previewGrid)) return {};
-  const out: Record<string, Record<string, "direct" | "inverse" | "none">> = {};
-  const n = coins.length;
-  for (let i = 0; i < n; i++) {
-    const row: Record<string, "direct" | "inverse" | "none"> = {};
-    for (let j = 0; j < n; j++) {
-      if (i === j) continue;
-      const val = previewGrid[i]?.[j] ?? 0;
-      let label: "direct" | "inverse" | "none" = "none";
-      if (val === 1) label = "direct";
-      else if (val === 2) label = "inverse";
-      row[coins[j]] = label;
-    }
-    out[coins[i]] = row;
-  }
-  return out;
+  if (!raw) return;
+  const parsed = parseCoinsParam(raw);
+  return parsed.length ? parsed : undefined;
 }
 
 export async function GET(req: NextRequest) {
   try {
-    let defaults = DEFAULT_COINS;
-    try {
-      const fromSettings = await resolveCoinsFromSettings();
-      defaults = fromSettings.length ? fromSettings : DEFAULT_COINS;
-    } catch {
-      defaults = DEFAULT_COINS;
-    }
+    // Resolve coins + poller + settings from shared context
+    const override = coinsFromQuery(req.nextUrl?.searchParams);
+    const ctx = await loadMatricesContext({
+      searchParams: req.nextUrl.searchParams,
+      coinsOverride: override,
+    });
 
-    const coins = parseCoins(req.nextUrl.searchParams, defaults);
+    // Live preview symbols (used for rings/flags)
+    const previewSet = await fetchPreviewSymbolSet(req.nextUrl.origin, ctx.coins);
 
-    let previewSet: Set<string> | undefined;
-    try {
-      const pvUrl = new URL("/api/preview/binance", req.nextUrl.origin);
-      pvUrl.searchParams.set("coins", coins.join(","));
-      const pv = await fetch(pvUrl, { cache: "no-store" });
-      if (pv.ok) {
-        const body = await pv.json().catch(() => null);
-        const symbols: string[] = Array.isArray(body?.symbols) ? body.symbols : [];
-        if (symbols.length) previewSet = new Set(uniqUpper(symbols));
-      }
-    } catch {
-      previewSet = undefined;
-    }
+    // Canonical payload
+    const payload = await buildLatestPayload({
+      coins: ctx.coins,
+      previewSymbols: previewSet,
+      settings: ctx.settings,
+      poller: ctx.poller,
+    });
 
-    const payload = await buildLatestPayload({ coins, previewSymbols: previewSet });
-    const matrices = (payload.matrices ?? {}) as Partial<Record<MatrixType, (number | null)[][] | null>>;
-
-    const rows: Record<MatrixType, number> = {
-      benchmark: countGridCells(matrices.benchmark),
-      delta: countGridCells(matrices.delta),
-      pct24h: countGridCells(matrices.pct24h),
-      id_pct: countGridCells(matrices.id_pct),
-      pct_drv: countGridCells(matrices.pct_drv),
-    };
-
-    const rings = toRingsMap(coins, (payload.flags as any)?.benchmark?.preview ?? null);
-
+    // Ensure legacy callers still see top-level matrices keys
     const body = {
       ...payload,
-      benchmark: matrices.benchmark ?? null,
-      delta: matrices.delta ?? null,
-      pct24h: matrices.pct24h ?? null,
-      id_pct: matrices.id_pct ?? null,
-      pct_drv: matrices.pct_drv ?? null,
-      rows,
-      rings,
+      benchmark: payload.matrices.benchmark ?? null,
+      delta:     payload.matrices.delta     ?? null,
+      pct24h:    payload.matrices.pct24h    ?? null,
+      id_pct:    payload.matrices.id_pct    ?? null,
+      pct_drv:   payload.matrices.pct_drv   ?? null,
+      coinSource: ctx.coinSource,
+      debug: {
+        coinSource: ctx.coinSource,
+        preview: previewSet ? `binance(${previewSet.size})` : "matrix",
+      },
     };
 
     const res = NextResponse.json(body, { headers: { "Cache-Control": "no-store" } });
-    res.headers.set("x-coins-used", coins.join(","));
-    for (const t of TYPES) {
-      res.headers.set(`x-rows-${t}`, String(rows[t] ?? 0));
-    }
+    // Diagnostics headers
+    res.headers.set("x-coins-used", payload.coins.join(","));
+    if (ctx.poller) res.headers.set("x-poller-ms", String(ctx.poller.baseMs));
+    for (const t of TYPES) res.headers.set(`x-rows-${t}`, String(payload.rows?.[t] ?? 0));
     return res;
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: String(e?.message ?? e) }, { status: 500 });

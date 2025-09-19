@@ -13,7 +13,7 @@ export async function getFrozenSetFromMatricesLatest(appSessionId: string, cycle
   if (!coins.length && process.env.NEXT_PUBLIC_COINS) {
     coins = asCoins(String(process.env.NEXT_PUBLIC_COINS).split(","));
   }
-  if (!coins.length) coins = ["BTC","ETH","BNB","SOL","ADA","XRP","PEPE","USDT"];
+  if (!coins.length) coins = ["BTC","ETH","BNB","SOL","ADA","DOGE","USDT","PEPE","BRL"];
 
   const base = process.env.INTERNAL_BASE_URL || "http://localhost:3000";
   const url =

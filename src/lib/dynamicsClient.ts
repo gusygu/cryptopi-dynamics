@@ -162,7 +162,7 @@ export function useCoinsUniverse(): Coins {
     const fromSettings: string[] = (settings?.coinUniverse ?? []).map(UPPER).filter(Boolean);
     if (fromSettings.length) return Array.from(new Set(fromSettings));
 
-    const env = process.env.NEXT_PUBLIC_COINS ?? "BTC,ETH,BNB,SOL,ADA,XRP,PEPE,USDT";
+    const env = process.env.NEXT_PUBLIC_COINS ?? "BTC,ETH,BNB,SOL,ADA,DOGE,USDT,PEPE,BRL";
     return Array.from(new Set(env.split(",").map(UPPER).filter(Boolean)));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [JSON.stringify((useSettings() as any)?.settings?.coinUniverse ?? [])]);

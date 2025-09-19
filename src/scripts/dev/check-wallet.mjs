@@ -16,7 +16,7 @@ async function main() {
   console.log("== wallet smoke (api) ==");
   // Use mock=1 to avoid touching real wallet; set mock=0 to test live
   const qs = new URLSearchParams({
-    coins: "BTC,ETH,BNB,SOL,ADA,XRP,PEPE,USDT",
+    coins: "BTC,ETH,BNB,SOL,ADA,DOGE,USDT,PEPE,BRL",
     k: "7",
     mock: "1",
   }).toString();

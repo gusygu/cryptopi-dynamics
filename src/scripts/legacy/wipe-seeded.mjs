@@ -82,7 +82,7 @@ async function wipeIdPctSeeds(){
     console.log('[wipe] table dyn_matrix_values does not exist; skipping');
     return { removedTs: [] };
   }
-  const arr = ['BTC','ETH','BNB','SOL','ADA','XRP','PEPE','USDT'];
+  const arr = ['BTC','ETH','BNB','SOL','ADA','DOGE','USDT','PEPE','BRL'];
   const expected = arr.length * (arr.length - 1); // 56
   const { rows } = await db.query(
     `select ts_ms, count(*) as c

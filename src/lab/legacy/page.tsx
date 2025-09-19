@@ -52,7 +52,7 @@ declare global {
 /* ───────────────────────────── Utils ───────────────────────────── */
 
 const ENV_FALLBACK = (process.env.NEXT_PUBLIC_COINS ??
-  "BTC,ETH,BNB,SOL,ADA,XRP,PEPE,DOGE,USDT")
+  "BTC,ETH,BNB,SOL,ADA,DOGE,USDT,PEPE,BRL")
   .split(",")
   .map((s) => s.trim().toUpperCase());
 

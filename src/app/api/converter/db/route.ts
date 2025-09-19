@@ -28,7 +28,7 @@ export async function GET(req: NextRequest) {
     const Cb = (url.searchParams.get("Cb") || "").toUpperCase();
 
     const coinsParam = parseCsv(url.searchParams.get("coins"));
-    const envCoins = (process.env.NEXT_PUBLIC_COINS ?? "BTC,ETH,BNB,SOL,ADA,XRP,USDT")
+    const envCoins = (process.env.NEXT_PUBLIC_COINS ?? "BTC,ETH,BNB,SOL,ADA,DOGE,USDT,PEPE,BRL")
       .split(",")
       .map((s) => s.trim().toUpperCase())
       .filter(Boolean);

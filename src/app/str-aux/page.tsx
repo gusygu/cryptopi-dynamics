@@ -91,7 +91,7 @@ export default function StrAuxPage() {
 
   // Settings coin universe (display + coins= param)
   const bases = useMemo(
-    () => uniqUpper(settings.coinUniverse?.length ? settings.coinUniverse : ['BTC','ETH','BNB','SOL','ADA','XRP','DOGE','USDT']),
+    () => uniqUpper(settings.coinUniverse?.length ? settings.coinUniverse : ['BTC','ETH','BNB','SOL','ADA','DOGE','USDT','PEPE','BRL']),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [settings.coinUniverse]
   );

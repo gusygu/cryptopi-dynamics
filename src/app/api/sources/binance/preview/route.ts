@@ -6,7 +6,7 @@ export const runtime = "nodejs";
 
 function combos(coins: string[]): string[] {
   const out: string[] = [];
-  const C = coins.map(c => c.trim().toUpperCase()).filter(Boolean);
+  const C = coins.map((c) => c.trim().toUpperCase()).filter(Boolean);
   for (let i = 0; i < C.length; i++) {
     for (let j = 0; j < C.length; j++) {
       if (i === j) continue;
@@ -19,14 +19,13 @@ function combos(coins: string[]): string[] {
 function parseCoins(search: URLSearchParams, fallback: string[]): string[] {
   const raw = search.get("coins");
   if (!raw) return fallback;
-  const arr = raw.split(",").map(s => s.trim().toUpperCase()).filter(Boolean);
+  const arr = raw.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
   return arr.length ? arr : fallback;
 }
 
 export async function GET(req: NextRequest) {
   try {
     const settings = await getSettings();
-    // IMPORTANT: use coinUniverse (project’s canonical place), not "coins"
     const defCoins: string[] =
       Array.isArray((settings as any)?.coinUniverse) && (settings as any).coinUniverse.length
         ? (settings as any).coinUniverse.map((c: any) => String(c).toUpperCase())
@@ -38,9 +37,7 @@ export async function GET(req: NextRequest) {
     }
 
     const candidates = combos(coins);
-
-    // Call our local verifier (POST /api/preview/symbols)
-    const verifyUrl = new URL("/api/preview/symbols", req.nextUrl.origin);
+    const verifyUrl = new URL("/api/sources/binance/preview/symbols", req.nextUrl.origin);
     const vr = await fetch(verifyUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },

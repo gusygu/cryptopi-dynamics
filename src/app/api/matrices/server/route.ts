@@ -1,37 +1,38 @@
-// src/app/api/matrices/route.ts
-import { NextResponse } from "next/server";
-import { getSettingsServer } from "@/lib/settings/server";
+import { NextRequest, NextResponse } from "next/server";
+import { buildLatestPayload } from "@/core/matricesLatest";
+import { loadMatricesContext } from "@/core/matrices/context";
+import { fetchPreviewSymbolSet } from "@/core/matrices/preview";
 
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
-    const settings = await getSettingsServer().catch(() => null);
-    const coins =
-      (settings?.coinUniverse?.length ? settings.coinUniverse :
-        (process.env.COINS ?? process.env.NEXT_PUBLIC_COINS ?? "BTC,ETH,BNB,SOL,ADA,XRP,PEPE,USDT")
-          .split(",").map((s) => s.trim().toUpperCase()).filter(Boolean));
+    const ctx = await loadMatricesContext({ searchParams: req.nextUrl.searchParams });
 
-    // Prefer core/matricesLatest if available
     try {
-      const mod: any = await import("@/core/matricesLatest");
-      if (mod?.buildLatestPayload) {
-        const payload = await mod.buildLatestPayload(coins);
-        return NextResponse.json(payload, { headers: { "Cache-Control": "no-store" } });
-      }
+      const previewSet = await fetchPreviewSymbolSet(req.nextUrl.origin, ctx.coins);
+      const payload = await buildLatestPayload({
+        coins: ctx.coins,
+        previewSymbols: previewSet,
+        settings: ctx.settings,
+        poller: ctx.poller,
+      });
+      return NextResponse.json(
+        { ...payload, coinSource: ctx.coinSource },
+        { headers: { "Cache-Control": "no-store" } }
+      );
     } catch {
-      // fall through to /api/matrices/latest
+      const base =
+        process.env.NEXT_PUBLIC_BASE_URL ||
+        (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : req.nextUrl.origin);
+      const url = new URL("/api/matrices/latest", base);
+      if (ctx.coins.length) url.searchParams.set("coins", ctx.coins.join(","));
+      url.searchParams.set("t", String(Date.now()));
+      const fallback = await fetch(url, { cache: "no-store" });
+      const body = await fallback.json();
+      return NextResponse.json(body, { headers: { "Cache-Control": "no-store" } });
     }
-
-    // Fallback: proxy to /api/matrices/latest
-    const base =
-      process.env.NEXT_PUBLIC_BASE_URL ||
-      (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000");
-    const url = new URL("/api/matrices/latest", base);
-    url.searchParams.set("coins", coins.join(","));
-    const r = await fetch(url, { cache: "no-store" });
-    const j = await r.json();
-    return NextResponse.json(j, { headers: { "Cache-Control": "no-store" } });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: String(e?.message || e) }, { status: 500 });
   }

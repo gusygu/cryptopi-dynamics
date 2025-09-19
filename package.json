@@ -21,8 +21,13 @@
     "smoke:doctorv3": "node src/scripts/smoke/doctor-v3.mjs",
     "smoke:db": "node src/scripts/smoke/db-health.mjs",
     "smoke:doctorv4": "node src/scripts/smoke/doctor-v4.mjs",
-    "smoke:head-xray": "node src/scripts/smoke/head-xray.mjs"
-    },
+    "smoke:head-xray": "node src/scripts/smoke/head-xray.mjs",
+    "smoke:matrices:head": "node src/scripts/smoke/matrices/head-route.mjs",
+    "smoke:matrices:server": "node src/scripts/smoke/matrices/server-route.mjs",
+    "smoke:matrices:complete": "node src/scripts/smoke/matrices/matrices-completeness.mjs",
+    "smoke:deep": "node src/scripts/smoke/matrices/deep-dive.mjs",
+    "smoke:deep:verbose": "node src/scripts/smoke/matrices/deep-dive.mjs --verbose"
+  },
   "dependencies": {
     "@radix-ui/react-separator": "^1.1.7",
     "@radix-ui/react-slot": "^1.2.3",

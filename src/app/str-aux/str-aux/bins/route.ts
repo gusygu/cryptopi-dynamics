@@ -45,7 +45,7 @@ function toSymbol(baseOrPair: string) {
 }
 
 function parseCoinsParam(s: string | null | undefined): string[] {
-  const raw = (s ?? process.env.NEXT_PUBLIC_COINS ?? 'BTC ETH BNB SOL ADA XRP')
+  const raw = (s ?? process.env.NEXT_PUBLIC_COINS ?? 'BTC ETH BNB SOL ADA DOGE USDT PEPE BRL')
     .toUpperCase()
     .split(/[,\s]+/)
     .map(v => v.trim())
